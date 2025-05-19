@@ -2,4 +2,6 @@
 
 env_name: Reacher-v5
 env_index: 6
-max_train_steps: 100000 # 50k
+max_train_steps: 1000000 
+# a_lr: 0.001
+# c_lr: 0.001

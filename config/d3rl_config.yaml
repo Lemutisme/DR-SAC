@@ -11,7 +11,7 @@ defaults:
 # General settings
 device: cuda
 mode: offline # offline, continual, generate
-model: TD3 # TD3, SAC, DDPG
+model: TD3 # TD3, SAC, DDPG, CQL
 write: false
 debug_print: false
 render: false

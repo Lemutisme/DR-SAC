@@ -79,7 +79,7 @@ beta: -0.4
 vmin: 0
 
 # Environment configurations
-reward_adapt: true
+reward_adapt: false # only for pendulum and lunarlander
 reward_normalize: false
 robust: false
 rho: 0.5

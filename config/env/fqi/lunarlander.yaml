@@ -4,6 +4,7 @@
 # Benchmark Reward: 250, std: 25
 env_name: LunarLanderContinuous-v3
 env_index: 2
+reward_adapt: true
 eval_freq: 1000
 eval_interval: 1000
 save_interval: 1000

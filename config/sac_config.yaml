@@ -19,7 +19,10 @@ load_path: None
 eval_model: false
 save_model: true
 data_path: None
+use_v: true
 soft_update_v: true
+vae_type: 'mlp' # mlp, transformer
+
 
 # Generating settings(epsilon-greedy)
 epsilon: 0.1
@@ -54,7 +57,7 @@ alpha: 0.12
 adaptive_alpha: true
 
 # Environment configurations
-reward_adapt: true
+reward_adapt: false # only for pendulum, lunarlander
 reward_normalize: false
 robust: false
 robust_optimizer: functional # beta, functional, separate
