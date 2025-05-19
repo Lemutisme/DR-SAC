@@ -3,74 +3,98 @@
 # Default configuration for SAC algorithm
 defaults:
   - _self_
-  - env/sac: pendulum
+  - env/sac: pendulum # default env: Pendulum
   - env_mods  # New include for environment modifications
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
-# General settings
-device: cuda
+# ------------  General settings  ------------
+# Device used
+device: cpu
+# Training mode: offline learning, continual learning or generating data
 mode: offline # offline, continual, generate
+# Whether writing summary on Tensorboard
 write: false
+# Whether priting loss
 debug_print: false
+# Whether using render mode in gymnasium
 render: false
+# Whether load model, typically used in evaluation
 load_model: false
+# Model loading path
 load_path: None
+# Whether evaluate policy
 eval_model: false
+# Whether save during training
 save_model: true
+# Data path in offline mode
 data_path: None
+# Whether using V-critic
 use_v: true
-soft_update_v: true
-vae_type: 'mlp' # mlp, transformer
 
-
-# Generating settings(epsilon-greedy)
+# ------------  Generating settings  ------------ 
+# For epsilon-greedy
 epsilon: 0.1
 
-# Training settings
+# ------------  Training settings  ------------
+# Random seed
 seed: 42
+# Training steps
 max_train_steps: 200000
+# VAE training steps
 vae_steps: 0
+# Save every xxx steps
 save_interval: 10000
+# Evaluate every xxx steps
 eval_interval: 1000
+# Size of data buffer
 data_size: 1000000 #1e6
+
 # Continual learning only
+# Update model every xxx steps
 update_every: 50
-update_freq: 1
+# Exploration episodes before training
 explore_episode: 50 
 
-# Algorithm hyperparameters
-gamma: 0.99
+# ------------  Algorithm hyperparameters  ------------
+# Soft update
 tau: 0.005
+# Hidden dimensions
 hid_dim: 256
+# Latent dimensions for vae
 latent_dim: 5
+# No. of hidden layers
 net_layer: 1
+# Whether using vectorized critic ensemble
+# If not, will use two parallel critics
 critic_ensemble: true
+# No. of critics
 n_critic: 2
-a_lr: 0.0005  # 5e-3
-c_lr: 0.0005 # 5e-4
-b_lr: 0.00005 # 5e-5
-g_lr: 0.0005 # 5e-4
-r_lr: 0.0005 # 5e-5
-batch_size: 256 #256
+# Mini-batch size
+batch_size: 256 
+# Learning rates
+a_lr: 0.0005 # 5e-4, for actor
+c_lr: 0.0005 # 5e-4, for critic
+g_lr: 0.0005 # 5e-4, for functional optimization 
+r_lr: 0.0005 # 5e-4, for transiiton vae 
+# Initial temperature
 alpha: 0.12
+# Whether using auto-tune temperature
 adaptive_alpha: true
 
-# Environment configurations
+# ------------  Environment configurations  ------------
+# Whether using reward engineering
 reward_adapt: false # only for pendulum, lunarlander
+# Whether normalizinf reward 
 reward_normalize: false
+# Whether using robust policy
 robust: false
-robust_optimizer: functional # beta, functional, separate
-robust_update_after: 0
-noise: false  # Legacy noise setting - consider using env_mods instead
-type: gaussian
-adv: false
-spread: 0.0      # Legacy std setting - consider using env_mods instead
-scale: 1.0    # Legacy scale setting - consider using env_mods instead
-delta: 0.0
+# Whether using functional optimization
+robust_optimizer: functional # functional, separate
+# Used in some test cases
 random_action_prob: 0.0
 
-# Hydra output directory
+# ------------  Hydra output directory  ------------
 hydra:
   run:
     dir: ./outputs/SAC/${now:%Y-%m-%d}/${now:%H-%M-%S}
