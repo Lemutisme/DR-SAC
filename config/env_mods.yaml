@@ -60,20 +60,10 @@ param_shift:
   joint0_damping: 1.0
   joint1_damping: 1.0
 
-# Custom env configuration (for supported environments)
-custom:
-  enabled: false
-  # For Pendulum:
-  spread: 0.0
-  type: "gaussian" # Options: gaussian, cauchy, laplace, t, uniform
-  adv: false
-
-
 # Evaluation environment configuration
 eval:
   use_modified: true  # Whether to use modified env for evaluation
-  scale_noise: false  # Whether to scale noise in eval env
-  noise_scale_factor: 2.0  # Factor to scale noise by in eval
+  include_observation_perturb: true  # Include action perturbations in eval
   include_action_perturb: true  # Include action perturbations in eval
   include_reward_shift: true  # Include reward shifts in eval
   include_transition_perturb: true  # Include transition perturbations in eval

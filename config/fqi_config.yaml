@@ -1,5 +1,5 @@
 # @package _global_
-
+# This is a collection of parameters used in FQI and RFQI algorithm. We intergrate them together.
 # Default configuration for FQI algorithm
 defaults:
   - _self_
@@ -8,23 +8,31 @@ defaults:
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
-# General settings
+# ------------  General settings  ------------
+# Device used
 device: cuda
-mode: offline # offline only
+# Whether writing summary on Tensorboard
 write: false
+# Whether priting network loss during training
 debug_print: false
+# Whether using render mode in gymnasium
 render: false
+# Whether load model, typically used in evaluation
 load_model: false
+# Model loading path
 load_path: None
+# Whether evaluate policy
 eval_model: false
+# Whether save model during training
 save_model: true
+# Data path in offline mode
 data_path: None
 
-# Training settings
+# ------------  Training settings  ------------
+# Random seed
 seed: 42
 # How often (time steps) we evaluate
 eval_freq: 1e4
-eval_interval: 2e3
 save_interval: 2e3
 # max time steps to train FQI
 max_trn_steps: 5e5
@@ -78,16 +86,16 @@ beta: -0.4
 # empirically set it to be the min of 1000 random rollout.
 vmin: 0
 
-# Environment configurations
+# ------------  Environment configurations  ------------
+# Whether using reward engineering
 reward_adapt: false # only for pendulum and lunarlander
+# Whether normalizing reward 
 reward_normalize: false
+# Whether using robust policy
 robust: false
+# Radius of TV distance ball
 rho: 0.5
-noise: false  # Legacy noise setting - consider using env_mods instead
-type: gaussian
-adv: false
-spread: 0.0      # Legacy std setting - consider using env_mods instead
-scale: 1.0    # Legacy scale setting - consider using env_mods instead
+# Probability of taking random actions, used in some test cases
 random_action_prob: 0.0
 
 # Hydra output directory

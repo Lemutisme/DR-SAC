@@ -10,12 +10,12 @@ defaults:
 
 # ------------  General settings  ------------
 # Device used
-device: cpu
+device: cuda
 # Training mode: offline learning, continual learning or generating data
 mode: offline # offline, continual, generate
 # Whether writing summary on Tensorboard
 write: false
-# Whether priting loss
+# Whether priting network loss during training
 debug_print: false
 # Whether using render mode in gymnasium
 render: false
@@ -25,7 +25,7 @@ load_model: false
 load_path: None
 # Whether evaluate policy
 eval_model: false
-# Whether save during training
+# Whether save model during training
 save_model: true
 # Data path in offline mode
 data_path: None
@@ -57,6 +57,8 @@ update_every: 50
 explore_episode: 50 
 
 # ------------  Algorithm hyperparameters  ------------
+# Discount rate
+gamma: 0.99
 # Soft update
 tau: 0.005
 # Hidden dimensions
@@ -85,13 +87,15 @@ adaptive_alpha: true
 # ------------  Environment configurations  ------------
 # Whether using reward engineering
 reward_adapt: false # only for pendulum, lunarlander
-# Whether normalizinf reward 
+# Whether normalizing reward 
 reward_normalize: false
 # Whether using robust policy
 robust: false
+# Radius of KL divergence ball
+delta: 0.1
 # Whether using functional optimization
 robust_optimizer: functional # functional, separate
-# Used in some test cases
+# Probability of taking random actions, used in some test cases
 random_action_prob: 0.0
 
 # ------------  Hydra output directory  ------------

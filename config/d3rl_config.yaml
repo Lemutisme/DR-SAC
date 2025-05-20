@@ -8,49 +8,64 @@ defaults:
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
-# General settings
+# ------------  General settings  ------------
+# Device used
 device: cuda
+# Training mode: offline learning, continual learning or generating data
 mode: offline # offline, continual, generate
+# Algorithm used to train model
 model: TD3 # TD3, SAC, DDPG, CQL
-write: false
-debug_print: false
+# Whether using render mode in gymnasium
 render: false
+# Whether load model, typically used in evaluation
 load_model: false
+# Model loading path
 load_path: None
+# Whether evaluate policy
 eval_model: false
+# Whether save model during training
 save_model: true
+# Data path in offline mode
 data_path: None
 
-# Generating settings(epsilon-greedy)
+# ------------  Generating settings  ------------ 
+# For epsilon-greedy
 epsilon: 0.1
 
-# Training settings
+# ------------  Training settings  ------------
+# Random seed
 seed: 42
+# Training steps
 max_train_steps: 200000
+# Save every xxx steps
 save_interval: 10000
-eval_interval: 1000
+# Continual learning only
+# Update model every xxx steps
 update_every: 50
+# Exploration episodes before training
 learning_starts: 10000
 
-# Algorithm hyperparameters
+# ------------  Algorithm hyperparameters  ------------
+# Discount rate
 gamma: 0.99
+# Soft update
 tau: 0.005
+# Hidden dimensions
 net_arch: [256,256]
+# No. of hidden layers
 net_layer: 1
+# No. of critics
 n_critic: 2
-a_lr: 0.0003 
-c_lr: 0.0003 
-l2_reg: 0 # 1e-3
-batch_size: 256 #256
+# Learning rates
+a_lr: 0.0003 # actor
+c_lr: 0.0003 # critic
+# Mini-batch size
+batch_size: 256 
 
 # Environment configurations
-reward_adapt: true
-noise: false  # Legacy noise setting - consider using env_mods instead
-type: gaussian
-adv: false
-spread: 0.0      # Legacy std setting - consider using env_mods instead
-scale: 1.0    # Legacy scale setting - consider using env_mods instead
-delta: 0.0
+# Whether using reward engineering
+reward_adapt: false
+# Probability of taking random actions, used in some test cases
 random_action_prob: 0.0
 
 # Hydra output directory

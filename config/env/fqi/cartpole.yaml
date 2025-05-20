@@ -1,11 +1,10 @@
 # @package _global_
 
 # ContinuousCartPole environment config
-# Baseline Reward: 500 (perfect score, zero-std)
+
 env_name: ContinuousCartPole
 env_index: 1
 eval_freq: 500
-eval_interval: 500
 save_interval: 500
 max_trn_steps: 4000
 max_vae_trn_step: 500
