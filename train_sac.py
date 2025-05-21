@@ -1,4 +1,4 @@
-from utils import evaluate_policy_SAC as evaluate_policy
+from utils import evaluate_policy as evaluate_policy
 from environment_modifiers import register
 from continuous_cartpole import register
 from sac import SAC_continuous
@@ -69,18 +69,14 @@ def main(cfg: DictConfig):
         'Pendulum-v1',
         "ContinuousCartPole-v0",
         'LunarLanderContinuous-v3',
-        'Humanoid-v5',
         'HalfCheetah-v5',
-        "Hopper-v5",
         "Reacher-v5"
     ]
     BrifEnvName = [
         'PV1',
         "CPV0",
         'LLdV3',
-        'HumanV5',
         'HCV5',
-        'HPV5',
         'RV5'
     ]
 
@@ -102,19 +98,15 @@ def main(cfg: DictConfig):
         summary_logger.info(f"Environment modifications enabled: {cfg.env_mods.use_mods}") 
     else:
         # Use legacy noise settings if env_mods is not used
-        if not opt.noise:
-            env = gym.make(EnvName[opt.env_index])
-            eval_env = gym.make(EnvName[opt.env_index])
-        else:
-            if opt.env_index == 0:
-                env = gym.make("CustomPendulum-v1", spread=opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
-                eval_env = gym.make("CustomPendulum-v1", spread=opt.scale*opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
+        env = gym.make(EnvName[opt.env_index])
+        eval_env = gym.make(EnvName[opt.env_index])
 
     # 3. Extract environment properties
     opt.state_dim = env.observation_space.shape[0]
+    opt.max_state = env.observation_space.high.tolist()
     opt.action_dim = env.action_space.shape[0]  # Continuous action dimensionprint
-    opt.max_action = float(env.action_space.high[0])  # Action range [-max_action, max_action]
-    opt.min_action = float(env.action_space.low[0])  # Action range [-max_action, max_action]
+    opt.max_action = env.action_space.high.tolist()  # Action range [-max_action, max_action]
+    opt.min_action = env.action_space.low.tolist() # Action range [-max_action, max_action]
     opt.max_e_steps = env._max_episode_steps    
 
     # 4. Print environment info
@@ -175,17 +167,7 @@ def main(cfg: DictConfig):
             log.info(f"Action perturbation: random action probability={opt.random_action_prob}.")
         seeds_list = [random.randint(0, 100000) for _ in range(eval_num)] if not hasattr(opt, 'seeds_list') else opt.seeds_list
         scores = []
-        # Use tqdm for evaluation progress
-        # type_lst = ['gaussian','laplace', 't', 'uniform', 'uniform']
-        # scale_lst = [2.0, 1.5, 1.0, 0.5, 3.5]
-        # type = 'gaussian'
         for i in tqdm(range(eval_num), desc="Evaluation Progress", ncols=100):
-            # if i % (eval_num // 5) == 0:
-            #     if i > 0:
-            #          summary_logger.info(f"Mean score of last env: {np.mean(scores[i-eval_num//5:i]):.2f}")
-            #     type = type_lst[i // (eval_num//5)]
-            #     scale = scale_lst[i // (eval_num//5)]
-            # eval_env = gym.make("CustomPendulum-v1", spread=opt.spread, type=type, adv=opt.adv) # Add noise when updating angle
             score = evaluate_policy(eval_env, agent, turns=1, seeds_list=[seeds_list[i]], random_action_prob=opt.random_action_prob)
             scores.append(score)
             # Update progress bar with current mean score
@@ -196,6 +178,7 @@ def main(cfg: DictConfig):
                 summary_logger.info(f"Intermediate evaluation ({i+1}/{eval_num}): Mean score = {current_mean:.2f}")
 
         # Calculate statistics
+        sum_score = np.sum(scores)
         mean_score = np.mean(scores)
         std_score = np.std(scores)
         p90_score = np.quantile(scores, 0.9)
@@ -204,7 +187,7 @@ def main(cfg: DictConfig):
         # Save results to output directory
         results_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "results.txt"
         with open(results_path, 'a') as f:
-            f.write(f"{[BrifEnvName[opt.env_index], mean_score, std_score, p90_score, p10_score]}\n")
+            f.write(f"{[BrifEnvName[opt.env_index], mean_score, std_score, p90_score, p10_score, sum_score]}\n")
 
         log.info(f"Results: {BrifEnvName[opt.env_index]}, Mean: {mean_score:.2f}, Std: {std_score:.2f}")
         log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
@@ -229,19 +212,20 @@ def main(cfg: DictConfig):
         if opt.mode == 'offline':
             agent.replay_buffer.load(opt.data_path, opt.reward_adapt, opt.reward_normalize, opt.env_index)
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
+                # If robust policy, train VAE first
+                if not opt.robust:
+                    opt.vae_steps = 0
                 while total_steps < opt.vae_steps:
-                    vae_loss = agent.tran_vae_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)
+                    vae_loss = agent.vae_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)      
                     total_steps += opt.eval_interval
                     pbar.update(opt.eval_interval)
                     
                     if total_steps % opt.eval_interval == 0:
-                        if writer is not None:
-                            writer.add_scalar('ep_r', ep_r, global_step=total_steps)
-
                         log.info(f"EnvName: {BrifEnvName[opt.env_index]}, "
                                  f"Steps: {int(total_steps/1000)}k, "
                                  f"VAE Loss: {vae_loss}")
-                                            
+                
+                # Policy training                         
                 while total_steps < opt.max_train_steps:
                     agent.train(writer, total_steps)
                     total_steps += 1
@@ -251,7 +235,7 @@ def main(cfg: DictConfig):
                     agent.a_lr *= 0.999
                     agent.c_lr *= 0.999
                     
-                    # (d) Evaluate and log periodically
+                    # Evaluate and log periodically
                     if total_steps % opt.eval_interval == 0:
                         # Temporarily close progress bars for evaluation
                         ep_r = evaluate_policy(eval_env, agent, turns=10, seeds_list=[random.randint(0, 100000) for _ in range(10)])
@@ -263,25 +247,24 @@ def main(cfg: DictConfig):
                                  f"Steps: {int(total_steps/1000)}k, "
                                  f"Episode Reward: {ep_r}")
                         
-                    # (e) Save model at fixed intervals
+                    # Save model at fixed intervals
                     if opt.save_model and total_steps % opt.save_interval == 0:
                         agent.save(BrifEnvName[opt.env_index])
                         
         elif opt.mode == 'generate':
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
                 while total_steps < opt.max_train_steps:
-                    # (a) Reset environment with incremented seed
+                    # Reset environment with incremented seed
                     state, info = env.reset(seed=env_seed)
                     env_seed += 1
                     total_episode += 1
                     done = False
 
-                    # (b) Interact with environment until episode finishes
+                    # Interact with environment until episode finishes
                     while not done:
-                        # Random exploration for some episodes (each episode is up to max_e_steps)
                         if np.random.random() < opt.epsilon:
                             # Sample action directly from environment's action space
-                            action = env.action_space.sample()  # Range: [-max_action, max_action]
+                            action = env.action_space.sample() 
                         else:
                             # Select action from agent
                             action = agent.select_action(state, deterministic=False)
@@ -328,7 +311,7 @@ def main(cfg: DictConfig):
                         # Random exploration for some episodes (each episode is up to max_e_steps)
                         if total_steps < (opt.explore_episode * opt.max_e_steps):
                             # Sample action directly from environment's action space
-                            action = env.action_space.sample()  # Range: [-max_action, max_action]
+                            action = env.action_space.sample() 
                         else:
                             # Select action from agent 
                             action = agent.select_action(state, deterministic=False)
