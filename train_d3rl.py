@@ -3,10 +3,11 @@ import gymnasium as gym
 import random
 import hydra
 import logging
+import platform
+import torch.cuda
 
 from d3rlpy import load_learnable
 from d3rlpy.algos import TD3, TD3Config, SAC, SACConfig, DDPG, DDPGConfig, CQL, CQLConfig
-from d3rlpy.preprocessing import ConstantShiftRewardScaler
 from d3rlpy.logging import FileAdapterFactory
 from d3rlpy.dataset import MDPDataset
 from d3rlpy.metrics import EnvironmentEvaluator
@@ -40,7 +41,7 @@ def eval_policy(env, agent, turns = 1, seeds_list = [], random_action_prob=0.0):
 
             total_scores += r
             s = s_next
-    return int(total_scores/turns)
+    return total_scores/turns
 
 def load_dataset(path, reward_adapt, EnvIdex):
     path = Path(get_original_cwd()) / path / "dataset"
@@ -60,7 +61,6 @@ def load_dataset(path, reward_adapt, EnvIdex):
     
     return s, a, r, s_next, dw
 
-
 @hydra.main(version_base=None, config_path="config", config_name="d3rl_config")
 def main(cfg: DictConfig):
     """
@@ -76,11 +76,6 @@ def main(cfg: DictConfig):
 
     summary_path = output_dir / "summary.log"
 
-    # Configure file logging manually to ensure it works
-    # file_handler = logging.FileHandler(output_dir / "train.log")
-    # file_handler.setFormatter(logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'))
-    # log.addHandler(file_handler)
-
     # Create file handler for summary log
     summary_handler = logging.FileHandler(summary_path)
     summary_handler.setLevel(logging.INFO)
@@ -95,8 +90,6 @@ def main(cfg: DictConfig):
     summary_logger.info(f"Starting {cfg.model} training with configuration: {cfg.env_name}")
 
     # Log system information
-    import platform
-    import torch.cuda
     system_info = {
         "Platform": platform.platform(),
         "Python": platform.python_version(),
@@ -116,18 +109,14 @@ def main(cfg: DictConfig):
         'Pendulum-v1',
         "ContinuousCartPole-v0",
         'LunarLanderContinuous-v3',
-        'Humanoid-v5',
         'HalfCheetah-v5',
-        'Hopper-v5',
         'Reacher-v5'
     ]
     BrifEnvName = [
         'PV1',
         "CPV0",
         'LLdV3',
-        'HumanV5',
         'HCV5',
-        'HPV5',
         'RV5'
     ]
 
@@ -146,17 +135,11 @@ def main(cfg: DictConfig):
         env, eval_env = create_env_with_mods(EnvName[opt.env_index], cfg.env_mods)
         
         # Log the modifications being applied
-        # log.info(f"Applied modifications: {OmegaConf.to_yaml(cfg.env_mods)}") # kind of repeated
         summary_logger.info(f"Environment modifications enabled: {cfg.env_mods.use_mods}") 
     else:
         # Use legacy noise settings if env_mods is not used
-        if not opt.noise:
-            env = gym.make(EnvName[opt.env_index])
-            eval_env = gym.make(EnvName[opt.env_index])
-        else:
-            if opt.env_index == 0:
-                env = gym.make("CustomPendulum-v1", spread=opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
-                eval_env = gym.make("CustomPendulum-v1", spread=opt.scale*opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
+        env = gym.make(EnvName[opt.env_index])
+        eval_env = gym.make(EnvName[opt.env_index])
 
     # 3. Extract environment properties
     opt.state_dim = env.observation_space.shape[0]
@@ -204,16 +187,13 @@ def main(cfg: DictConfig):
 
     # 8. Initialize the SAC agent
     if opt.model == 'TD3':
-        # if opt.mode == 'continual' and opt.env_index == 0:
-        #     reward_scaler = ConstantShiftRewardScaler(shift=8, multiplier=0.125)
-        # else:
-        #     reward_scaler = 'default'
         config = TD3Config(batch_size=opt.batch_size,
                            gamma=opt.gamma,
                            tau=opt.tau,
                            actor_learning_rate=opt.a_lr,
                            critic_learning_rate=opt.c_lr)
         agent = TD3(config, opt.device, False)
+        
     elif opt.model == 'SAC':
         config = SACConfig(batch_size=opt.batch_size,
                            gamma=opt.gamma,
@@ -222,6 +202,7 @@ def main(cfg: DictConfig):
                            critic_learning_rate=opt.c_lr,
                            n_critics=opt.n_critic)
         agent = SAC(config, opt.device, False)
+        
     elif opt.model == 'DDPG':
         config = DDPGConfig(batch_size=opt.batch_size,
                            gamma=opt.gamma,
@@ -261,28 +242,29 @@ def main(cfg: DictConfig):
             log.info(f"Action perturbation: random action probability={opt.random_action_prob}.")
         seeds_list = [random.randint(0, 100000) for _ in range(eval_num)] if not hasattr(opt, 'seeds_list') else opt.seeds_list
 
-        scores = []
+        score_list = []
         # Use tqdm for evaluation progress
         for i in tqdm(range(eval_num), desc="Evaluation Progress", ncols=100):
             score = eval_policy(eval_env, agent, turns=1, seeds_list=[seeds_list[i]], random_action_prob=opt.random_action_prob)
-            scores.append(score)
+            score_list.append(score)
             # Update progress bar with current mean score
             if i > 0 and i % 5 == 4:
-                current_mean = np.mean(scores[:i])
+                current_mean = np.mean(score_list[:i])
                 tqdm.write(f"Current mean score after {i+1} episodes: {current_mean:.2f}")
                 # Log intermediate results to summary
                 summary_logger.info(f"Intermediate evaluation ({i+1}/{eval_num}): Mean score = {current_mean:.2f}")
 
         # Calculate statistics
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        p90_score = np.quantile(scores, 0.9)
-        p10_score = np.quantile(scores, 0.1)
+        sum_score = np.sum(score_list)
+        mean_score = np.mean(score_list)
+        std_score = np.std(score_list)
+        p90_score = np.quantile(score_list, 0.9)
+        p10_score = np.quantile(score_list, 0.1)
 
         # Save results to output directory
         results_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "results.txt"
         with open(results_path, 'a') as f:
-            f.write(f"{[BrifEnvName[opt.env_index], mean_score, std_score, p90_score, p10_score]}\n")
+            f.write(f"{[BrifEnvName[opt.env_index], mean_score, std_score, p90_score, p10_score, sum_score]}\n")
 
         log.info(f"Results: {BrifEnvName[opt.env_index]}, Mean: {mean_score:.2f}, Std: {std_score:.2f}")
         log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
@@ -315,7 +297,8 @@ def main(cfg: DictConfig):
                       show_progress=True,
                      )
             agent.save("model.d3")
-            
+                
+        # Data generation option        
         elif opt.mode == 'generate':
             buffer = ReplayBuffer(opt.state_dim, opt.action_dim, max_size=int(1e6), device=opt.device)
             total_steps = 0
@@ -359,7 +342,8 @@ def main(cfg: DictConfig):
                         log.info(f"Data collected: {total_steps} in {total_episode} episodes.")
                         
             buffer.save()
-            
+        
+        # Continual learning option    
         elif opt.mode == 'continual':
             agent.fit_online(env=env,
                              n_steps=opt.max_train_steps,
@@ -371,26 +355,24 @@ def main(cfg: DictConfig):
                              logger_adapter=FileAdapterFactory(root_dir=output_dir),
                              show_progress=True)
             agent.save("model.d3")
-            
-        
+                 
         else:
-            raise NotImplementedError       
-                              
+            raise NotImplementedError                               
 
         # Evaluate the trained agent
         eval_num = 20
         log.info(f"Training completed. Evaluating across {eval_num} episodes")
-        scores = []
+        score_list = []
 
         # Create a progress bar for evaluation
         for i in tqdm(range(eval_num), desc="Final Evaluation", ncols=100):
             score = eval_policy(eval_env, agent, turns=1)
-            scores.append(score)
+            score_list.append(score)
 
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        p90_score = np.quantile(scores, 0.9)
-        p10_score = np.quantile(scores, 0.1)
+        mean_score = np.mean(score_list)
+        std_score = np.std(score_list)
+        p90_score = np.quantile(score_list, 0.9)
+        p10_score = np.quantile(score_list, 0.1)
 
         log.info(f"Final evaluation - Mean: {mean_score:.2f}, Std: {std_score:.2f}")
         log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
@@ -406,7 +388,6 @@ def main(cfg: DictConfig):
         summary_logger.info(f"  90th percentile: {p90_score:.2f}")
         summary_logger.info(f"  10th percentile: {p10_score:.2f}")
         summary_logger.info("-" * 50)
-
 
     env.close()
     eval_env.close()
