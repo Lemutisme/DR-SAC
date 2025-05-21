@@ -1,10 +1,10 @@
+# This is based on https://github.com/zaiyan-x/RFQI
+# We reformulated thr training function from train_fqi.py and train_rfqi.py
+# Our new training function is integrated for both FQI and RFQI, driven by config file, and able to generate training logs.
 import argparse
 import gymnasium as gym
-from gymnasium import spaces
 import numpy as np
-import os
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 import random
 import hydra
@@ -102,18 +102,14 @@ def main(cfg: DictConfig):
         'Pendulum-v1',
         "ContinuousCartPole-v0",
         'LunarLanderContinuous-v3',
-        'Humanoid-v5',
         'HalfCheetah-v5',
-        'Hopper-v5',
         'Reacher-v5'
     ]
     BrifEnvName = [
         'PV1',
         "CPV0",
         'LLdV3',
-        'HumanV5',
         'HCV5',
-        'HPV5',
         'RV5'
     ]
 
@@ -132,21 +128,14 @@ def main(cfg: DictConfig):
         env, eval_env = create_env_with_mods(EnvName[opt.env_index], cfg.env_mods)
         
         # Log the modifications being applied
-        # log.info(f"Applied modifications: {OmegaConf.to_yaml(cfg.env_mods)}") # kind of repeated
         summary_logger.info(f"Environment modifications enabled: {cfg.env_mods.use_mods}") 
     else:
-        # Use legacy noise settings if env_mods is not used
-        if not opt.noise:
-            env = gym.make(EnvName[opt.env_index])
-            eval_env = gym.make(EnvName[opt.env_index])
-        else:
-            if opt.env_index == 0:
-                env = gym.make("CustomPendulum-v1", spread=opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
-                eval_env = gym.make("CustomPendulum-v1", spread=opt.scale*opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
-
+        env = gym.make(EnvName[opt.env_index])
+        eval_env = gym.make(EnvName[opt.env_index])
+      
     # 3. Extract environment properties
     opt.state_dim = env.observation_space.shape[0]
-    opt.max_state = None
+    opt.max_state = None # None for continuous state space
     opt.action_dim = env.action_space.shape[0]  # Continuous action dimensionprint
     opt.max_action = float(env.action_space.high[0])  # Action range [-max_action, max_action]
     opt.min_action = float(env.action_space.low[0])
@@ -190,14 +179,15 @@ def main(cfg: DictConfig):
 
     # 8. Initialize the SAC agent
     if opt.robust:
+        # RFQI algorithm
         agent = RFQI(**OmegaConf.to_container(opt, resolve=True))
     else:     
+        # FQI algorithm based on PQL-BCQ
         agent = PQL_BCQ(**OmegaConf.to_container(opt, resolve=True))
 
     # 9. Load a saved model if requested
     if opt.load_model:
         log.info("Loading pre-trained model")
-        # params = f"{opt.std}_{opt.robust}"
         agent.load(BrifEnvName[opt.env_index], opt.load_path)
 
     # 10. If rendering mode is on, run an infinite evaluation loop
@@ -215,29 +205,30 @@ def main(cfg: DictConfig):
             log.info(f"Action perturbation: random action probability={opt.random_action_prob}.")
         seeds_list = [random.randint(0, 100000) for _ in range(eval_num)] if not hasattr(opt, 'seeds_list') else opt.seeds_list        
 
-        scores = []
+        score_list = []
         # Use tqdm for evaluation progress
         for i in tqdm(range(eval_num), desc="Evaluation Progress", ncols=100):
             score, _ = eval_policy(agent, eval_env, eval_episodes=1, seeds_list=[seeds_list[i]], random_action_prob=opt.random_action_prob)
-            scores.append(score)
+            score_list.append(score)
             # Update progress bar with current mean score
             if i > 0 and i % 5 == 4:
-                current_mean = np.mean(scores[:i])
+                current_mean = np.mean(score_list[:i])
                 tqdm.write(f"Current mean score after {i+1} episodes: {current_mean:.2f}")
                 # Log intermediate results to summary
                 summary_logger.info(f"Intermediate evaluation ({i+1}/{eval_num}): Mean score = {current_mean:.2f}")
 
         # Calculate statistics
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        p90_score = np.quantile(scores, 0.9)
-        p10_score = np.quantile(scores, 0.1)
+        sum_score = np.sum(score_list)
+        mean_score = np.mean(score_list)
+        std_score = np.std(score_list)
+        p90_score = np.quantile(score_list, 0.9)
+        p10_score = np.quantile(score_list, 0.1)
 
         # Save results to output directory
         results_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "results.txt"
         with open(results_path, 'a') as f:
-            f.write(f"{[BrifEnvName[opt.env_index], mean_score, std_score, p90_score, p10_score]}\n")
-
+            f.write(f"{[BrifEnvName[opt.env_index], mean_score, std_score, p90_score, p10_score, sum_score]}\n")
+            
         log.info(f"Results: {BrifEnvName[opt.env_index]}, Mean: {mean_score:.2f}, Std: {std_score:.2f}")
         log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
         log.info(f"Results saved to {results_path}")
@@ -253,6 +244,7 @@ def main(cfg: DictConfig):
         summary_logger.info("-" * 50)
 
     # 12. Otherwise, proceed with training
+    # The training steps is reformulated from train_fqi.py and train_rfqi.py in RFQI.
     else:
         training_iters = 0
         
@@ -260,7 +252,9 @@ def main(cfg: DictConfig):
         if opt.automatic_beta == 'True':
             automatic_beta = True
         else:
-            automatic_beta = False# load data
+            automatic_beta = False
+        
+        # load data
         data = DATA(opt.state_dim, opt.action_dim, opt.max_action, opt.device, opt.data_size)
         data.load(opt.data_path, opt.reward_adapt, opt.reward_normalize, opt.env_index)
 
@@ -286,15 +280,17 @@ def main(cfg: DictConfig):
             # train policy for 'eval_freq' steps
             while training_iters < opt.max_trn_steps:
                 if opt.robust:
+                    # RFQI model train function
                     agent.train(data, trn_steps=int(opt.eval_freq), batch_size=opt.batch_size, writer=writer, log_base=training_iters)
                 else:
+                    # FQI model train function
                     agent.train(data, iterations=int(opt.eval_freq), batch_size=opt.batch_size)
                     
                 training_iters += opt.eval_freq # loop
                 pbar.update(opt.eval_freq)
 
                         
-                if training_iters % opt.eval_interval == 0:
+                if training_iters % opt.eval_freq == 0:
                     # Temporarily close progress bars for evaluation
                     ep_r, _ = eval_policy(agent, eval_env, eval_episodes=10)
 
@@ -313,17 +309,17 @@ def main(cfg: DictConfig):
         # Evaluate the trained agent
         eval_num = 20
         log.info(f"Training completed. Evaluating across {eval_num} episodes")
-        scores = []
+        score_list = []
 
         # Create a progress bar for evaluation
         for i in tqdm(range(eval_num), desc="Final Evaluation", ncols=100):
             score, _ = eval_policy(agent, eval_env, eval_episodes=1)
-            scores.append(score)
+            score_list.append(score)
 
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        p90_score = np.quantile(scores, 0.9)
-        p10_score = np.quantile(scores, 0.1)
+        mean_score = np.mean(score_list)
+        std_score = np.std(score_list)
+        p90_score = np.quantile(score_list, 0.9)
+        p10_score = np.quantile(score_list, 0.1)
 
         log.info(f"Final evaluation - Mean: {mean_score:.2f}, Std: {std_score:.2f}")
         log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
