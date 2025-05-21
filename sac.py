@@ -16,16 +16,6 @@ from scipy.optimize import minimize_scalar
 from hydra.utils import get_original_cwd
 
 
-######################################################
-# NOTE: 
-# Actor, Double_Q_Critic, V_Critic: MLP
-# Transition learner: VAE
-# Three robust dual optimization options:
-# 1. beta, minimize loss.mean()
-# 2. functional g, minimize scalar loss, equivalent to replace beta with g(s,a)
-# 3. independent optimize, too slow
-######################################################
-
 class Actor(nn.Module):
     def __init__(self, state_dim, action_dim, max_action, hid_dim, hid_layers, hidden_activation=nn.ReLU, output_activation=nn.ReLU):
         super(Actor, self).__init__()
@@ -36,7 +26,7 @@ class Actor(nn.Module):
         self.log_std_layer = nn.Linear(layers[-1], action_dim)
 
         self.LOG_STD_MAX = 2
-        self.LOG_STD_MIN = -5
+        self.LOG_STD_MIN = -20
         self.max_action = max_action
         
         # init as in the EDAC paper
@@ -58,7 +48,7 @@ class Actor(nn.Module):
         dist = Normal(mu, std)
         u = mu if deterministic else dist.rsample()
 
-        '''↓↓↓ Enforcing Action Bounds, see Page 16 of https://arxiv.org/pdf/1812.05905.pdf ↓↓↓'''
+        '''Enforcing Action Bounds, see Page 16 of https://arxiv.org/pdf/1812.05905.pdf '''
         a = torch.tanh(u)
         if with_logprob:
             # Get probability density of logp_pi_a from probability density of u:
@@ -81,7 +71,8 @@ class V_Critic(nn.Module):
     def forward(self, state):
         output = self.V(state)
         return output
-    
+
+# Reference: SAC-N https://arxiv.org/pdf/2110.01548
 class VectorizedLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int, ensemble_size: int):
         super().__init__()
@@ -109,6 +100,7 @@ class VectorizedLinear(nn.Module):
         # out: [ensemble_size, batch_size, out_size]
         return x @ self.weight + self.bias
 
+# Ensemble of vectorized critics
 class VectorizedCritic(nn.Module):
     def __init__(
         self, state_dim: int, action_dim: int, hidden_dim: int, hid_layers: int, num_critics: int,
@@ -141,6 +133,7 @@ class VectorizedCritic(nn.Module):
         q_values = self.critic(state_action).squeeze(-1)
         return q_values
 
+# Parallel implementation of two critics.
 class Double_Q_Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
         super(Double_Q_Critic, self).__init__()
@@ -155,17 +148,17 @@ class Double_Q_Critic(nn.Module):
         q2 = self.Q_2(sa)            
         return q1, q2
 
-class TransitionVAE(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim, hidden_layers, latent_dim):
-        super(TransitionVAE, self).__init__()
+class MLPTransitionVAE(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim, hidden_layer, latent_dim):
+        super(MLPTransitionVAE, self).__init__()
         # Encoder layers
-        e_layers = [state_dim * 2 + action_dim] + [hidden_dim, hidden_dim] * hidden_layers
+        e_layers = [state_dim * 2 + action_dim] + [hidden_dim, hidden_dim] * hidden_layer
         self.encoder = build_net(e_layers, nn.ReLU, nn.Identity)
         self.e_mu = nn.Linear(e_layers[-1], latent_dim)
         self.e_logvar = nn.Linear(e_layers[-1], latent_dim)
 
         # Decoder layers: out_dim = state_dim
-        d_layers = [state_dim + action_dim + latent_dim] + [hidden_dim, hidden_dim] * hidden_layers + [state_dim]
+        d_layers = [state_dim + action_dim + latent_dim] + [hidden_dim, hidden_dim] * hidden_layer + [state_dim]
         self.decoder = build_net(d_layers, nn.ReLU, nn.Identity)
         
         self.latent_dim = latent_dim
@@ -201,17 +194,18 @@ class TransitionVAE(nn.Module):
         s_expanded = s.unsqueeze(1).expand(-1, num_samples, -1)
         a_expanded = a.unsqueeze(1).expand(-1, num_samples, -1)
         s_next_samples = self.decode(s_expanded, a_expanded, z)
+        s_next_samples = self.wrapper(s_next_samples)
         return s_next_samples   
 
 class ExpActivation(nn.Module):
     def forward(self, x):
         return torch.exp(x)   
 
+# To approximate functional set G
 class dual(nn.Module):
     def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
         super(dual, self).__init__()  
         layers = [state_dim + action_dim] + [hid_dim, hid_dim] * hid_layers + [1]
-
         self.G = build_net(layers, nn.ReLU, ExpActivation)
 
     def forward(self, state, action):
@@ -222,20 +216,25 @@ class SAC_continuous():
     def __init__(self, **kwargs):
         # Init hyperparameters for agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
         self.__dict__.update(kwargs)
+        self.max_action = torch.tensor(self.max_action, device=self.device)
+        self.max_state = torch.tensor(self.max_state, device=self.device)
         
-        self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, max_size=self.data_size, device=self.device)
+        self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, max_size=self.data_size, device=self.device, EnvIndex=self.env_index)
 
         self.actor = Actor(self.state_dim, self.action_dim, self.max_action, self.hid_dim, self.net_layer).to(self.device)
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr=self.a_lr)
 
-        self.v_critic = V_Critic(self.state_dim, self.hid_dim, self.net_layer).to(self.device)
-        self.v_critic_optimizer = torch.optim.AdamW(self.v_critic.parameters(), lr=self.c_lr)
-        if self.soft_update_v:
-            self.v_critic_target = copy.deepcopy(self.v_critic)
-            # Freeze target networks with respect to optimizers (only update via polyak averaging)
-            for p in self.v_critic_target.parameters():
-                p.requires_grad = False
+        # Option of using V-critic
+        if self.use_v:
+            self.v_critic = V_Critic(self.state_dim, self.hid_dim, self.net_layer).to(self.device)
+            self.v_critic_optimizer = torch.optim.AdamW(self.v_critic.parameters(), lr=self.c_lr)
+            if self.soft_update_v:
+                self.v_critic_target = copy.deepcopy(self.v_critic)
+                # Freeze target networks with respect to optimizers (only update via polyak averaging)
+                for p in self.v_critic_target.parameters():
+                    p.requires_grad = False
 
+        # Option of vectorized / parallel(limit to 2) critics
         if self.critic_ensemble:
             self.q_critic = VectorizedCritic(self.state_dim, self.action_dim, self.hid_dim, self.net_layer, self.n_critic).to(self.device)
         else:
@@ -248,10 +247,8 @@ class SAC_continuous():
             
         if self.robust:    
             print('This is a robust policy.')
-            self.transition = TransitionVAE(self.state_dim, self.action_dim,
-                                            hidden_dim=self.hid_dim, 
-                                            hidden_layers=self.net_layer,
-                                            latent_dim=self.latent_dim).to(self.device)
+            self.transition = MLPTransitionVAE(self.state_dim, self.action_dim, 
+                                               hidden_dim=self.hid_dim, hidden_layer=self.net_layer, latent_dim=self.latent_dim).to(self.device)
             self.trans_optimizer = torch.optim.AdamW(self.transition.parameters(), lr=self.r_lr)
             if self.robust_optimizer == 'beta':
                 self.log_beta = nn.Parameter(torch.ones((self.batch_size,1), requires_grad=True, device=self.device) * 1.0)
@@ -260,6 +257,7 @@ class SAC_continuous():
                 self.g = dual(self.state_dim, self.action_dim, self.hid_dim, self.net_layer).to(self.device)
                 self.g_optimizer = torch.optim.AdamW(self.g.parameters(), lr=self.g_lr)
 
+        # Option for auto-tune temperature alpha
         if self.adaptive_alpha:
             # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
             self.target_entropy = torch.tensor(-self.action_dim, dtype=float, requires_grad=True, device=self.device)
@@ -275,19 +273,14 @@ class SAC_continuous():
         return a.cpu().numpy()[0]
 
     def vae_loss(self, s_next, s_next_recon, mu, logvar, beta=1):
-        recon_loss = F.mse_loss(s_next_recon, s_next, reduction='sum')
-        kl_div = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum()
+        recon_loss = F.mse_loss(s_next_recon, s_next)
+        kl_div = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
         return recon_loss, beta * kl_div
 
     def dual_func_g(self, s, a, s_next):
         size = s_next.shape[1]
         dual_sa = self.g(s,a)
-        return - dual_sa * (torch.logsumexp(-self.v_critic_target(s_next).squeeze(-1)/dual_sa, dim=1, keepdim=True) - math.log(size)) - dual_sa * self.delta  
-
-    def dual_func_beta(self, s_next, beta):
-        # Jointly optimize, in tensor
-        size = s_next.shape[1]
-        return - beta * (torch.logsumexp(-self.v_critic_target(s_next).squeeze(-1)/beta, dim=1, keepdim=True) - math.log(size)) - beta * self.delta     
+        return - dual_sa * (torch.logsumexp(-self.v_critic_target(s_next).squeeze(-1)/dual_sa, dim=1, keepdim=True) - math.log(size)) - dual_sa * self.delta     
 
     def dual_func_ind(self, s_next, beta):
         # Independently optimize, in np.array
@@ -296,85 +289,72 @@ class SAC_continuous():
         v_next = v_next.cpu().numpy()
         return - beta * (logsumexp(-v_next/beta) - math.log(size)) - beta * self.delta     
     
-    def tran_vae_train(self, debug_print, writer, step, iterations, s=None, a=None, s_next=None):
+    def vae_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None):
         for _ in range(iterations):
-            if s is None:
-                s, a, r, s_next, dw = self.replay_buffer.sample(self.batch_size)
-            s_next_recon, mu, std = self.transition(s, a, s_next)
-            recon_loss, kl_div = self.vae_loss(s_next, s_next_recon, mu, std)
+            if sample:
+                s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
+            s_next_recon, mu, logvar = self.transition(s_norm, a, s_next_norm)
+            recon_loss, kl_div = self.vae_loss(s_next_norm, s_next_recon, mu, logvar)
             tr_loss = recon_loss + kl_div
             self.trans_optimizer.zero_grad()
             tr_loss.backward()
             self.trans_optimizer.step()
-            if debug_print:
-                print(f"recon_loss: {recon_loss.item()}, kl_div = {kl_div}.")
+        if debug_print:
+            print(f"recon_loss: {recon_loss.item()}, kl_div = {kl_div}.")
         if writer:
             writer.add_scalar('tr_loss', tr_loss, global_step=step)
         return tr_loss.item()
         
     def train(self, writer, step):
-        s, a, r, s_next, dw = self.replay_buffer.sample(self.batch_size)
+        s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
         debug_print = self.debug_print and (step % 1000 == 0)
                 
         #----------------------------- ↓↓↓↓↓ Update V Net ↓↓↓↓↓ ------------------------------#
-        for params in self.v_critic.parameters():
-            params.requires_grad = True
-            
-        policy_a , log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
-        if self.critic_ensemble:
-            Q_list = self.q_critic_target(s, policy_a)
-            assert Q_list.shape[0] == self.n_critic
-            Q_min = Q_list.min(0).values.unsqueeze(-1)
-        else:
-            current_Q1, current_Q2 = self.q_critic(s, policy_a)
-        ### V(s) = E_pi(Q(s,a) - α * logπ(a|s)) ###
-        target_V = (Q_min - self.alpha * log_pi_a).detach()
-
-        current_V = self.v_critic(s)
-        v_loss = F.mse_loss(current_V, target_V)
-
-        self.v_critic_optimizer.zero_grad()
-        v_loss.backward()
-        self.v_critic_optimizer.step()
-        if debug_print:
-            print(f"v_loss: {v_loss.item()}")
-        if writer:
-            writer.add_scalar('v_loss', v_loss, global_step=step)        
+        if self.use_v:
+            for params in self.v_critic.parameters():
+                params.requires_grad = True
                 
-        for params in self.v_critic.parameters():
-            params.requires_grad = False     
+            policy_a , log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
+            if self.critic_ensemble:
+                Q_list = self.q_critic_target(s, policy_a)
+                assert Q_list.shape[0] == self.n_critic
+                Q_min = Q_list.min(0).values.unsqueeze(-1)
+            else:
+                current_Q1, current_Q2 = self.q_critic_target(s, policy_a)
+                Q_min = torch.min(current_Q1, current_Q2)
+            ### V(s) = E_pi(Q(s,a) - α * logπ(a|s)) ###
+            target_V = (Q_min - self.alpha * log_pi_a).detach()
+
+            current_V = self.v_critic(s)
+            v_loss = F.mse_loss(current_V, target_V)
+
+            self.v_critic_optimizer.zero_grad()
+            v_loss.backward()
+            self.v_critic_optimizer.step()
+            if debug_print:
+                print(f"v_loss: {v_loss.item()}")
+            if writer:
+                writer.add_scalar('v_loss', v_loss, global_step=step)        
+                    
+            for params in self.v_critic.parameters():
+                params.requires_grad = False     
         
         #----------------------------- ↓↓↓↓↓ Update R Net ↓↓↓↓↓ ------------------------------#        
-        if self.robust:    
-            self.tran_vae_train(debug_print, writer, step, 1, s, a, s_next)
+        if self.robust: 
+            self.vae_train(debug_print, writer, step, iterations=1, sample=False,
+                               s_norm=s_norm, s_next_norm=s_next_norm)
+
             
         #----------------------------- ↓↓↓↓↓ Robust Update ↓↓↓↓↓ ------------------------------#         
             with torch.no_grad():
-                s_next_sample = self.transition.sample(s, a, 200)
+                s_next_sample_norm = self.transition.sample(s_norm, a, 200)
+                s_next_sample = self.replay_buffer.state_reverse(s_next_sample_norm)
 
             #############################################################		
-            ### option1: optimize w.r.t beta ###
-            # self.log_beta = nn.Parameter(torch.ones_like(self.log_beta, requires_grad=True, device=self.device) * 0.1)
-            # self.beta_optimizer = torch.optim.Adam([self.log_beta], lr=self.b_lr)
-            if self.robust_optimizer == 'beta':
-                for _ in range(5):
-                    self.beta = torch.exp(self.log_beta)
-                    opt_loss = -self.dual_func_beta(s_next_sample, self.beta)
-                    self.beta_optimizer.zero_grad()
-                    opt_loss.mean().backward()
-                    if debug_print:
-                        print(opt_loss.sum().item())
-                    self.beta_optimizer.step() 
-
-                V_next_opt = self.dual_func_beta(s_next_sample, torch.exp(self.log_beta)) 
-            #############################################################		
-
-            #############################################################		
-            ### option2: optimize w.r.t functional g ###
-            elif self.robust_optimizer == 'functional':
-                for _ in range(10):
-                    opt_loss = -self.dual_func_g(s, a, s_next_sample)
-                    
+            ### option1: optimize w.r.t functional g ###
+            if self.robust_optimizer == 'functional':
+                for i in range(5):
+                    opt_loss = -self.dual_func_g(s, a, s_next_sample) 
                     self.g_optimizer.zero_grad()
                     opt_loss.mean().backward()
                     self.g_optimizer.step() 
@@ -386,15 +366,14 @@ class SAC_continuous():
             #############################################################		
 
             #############################################################		
-            # option3: Use scipy.optimize to separately optimize
+            # option2: Use scipy.optimize to separately optimize
             elif self.robust_optimizer == 'separate':
-                s_next_sample = s_next_sample.cpu().numpy()
-                V_next_opt_acc = np.zeros((self.batch_size, 1))
+                V_next_opt = np.zeros((self.batch_size, 1))
                 for i in range(s_next_sample.shape[0]):
                     opt = minimize_scalar(fun=lambda beta:-self.dual_func_ind(s_next_sample[i], beta), method='Bounded', bounds=(1e-4, 1.0))
-                    V_next_opt_acc[i] = -opt.fun
-                V_next_opt_acc = torch.from_numpy(V_next_opt_acc).float()
-                V_next_opt_acc = V_next_opt_acc.to('cuda' if torch.cuda.is_available() else 'cpu')
+                    V_next_opt[i] = -opt.fun
+                V_next_opt = torch.from_numpy(V_next_opt).float()
+                V_next_opt = V_next_opt.to('cuda' if torch.cuda.is_available() else 'cpu')
             ############################################################		
 
             else:
@@ -405,7 +384,19 @@ class SAC_continuous():
             params.requires_grad = True
 
         with torch.no_grad():
-            V_next = self.v_critic_target(s_next) if self.soft_update_v else self.v_critic(s_next)
+            if self.use_v:
+                V_next = self.v_critic_target(s_next) if self.soft_update_v else self.v_critic(s_next)
+            else:
+                a_next , log_pi_a_next = self.actor(s_next, deterministic=False, with_logprob=True)
+                if self.critic_ensemble:
+                    Q_list = self.q_critic_target(s_next, a_next)
+                    assert Q_list.shape[0] == self.n_critic
+                    Q_next = Q_list.min(0).values.unsqueeze(-1)
+                else:
+                    current_Q1, current_Q2 = self.q_critic_target(s_next, a_next)
+                    Q_next = torch.min(current_Q1, current_Q2)
+               
+                V_next = (Q_next - self.alpha * log_pi_a_next)
             #############################################################		
             ### Q(s, a) = r + γ * (1 - done) * V(s') ###
             if self.robust:
@@ -439,6 +430,14 @@ class SAC_continuous():
         #----------------------------- ↓↓↓↓↓ Update Actor Net ↓↓↓↓↓ ------------------------------#
         # Entropy Regularization
         # Note that the entropy term is not included in the loss function
+        if not self.use_v:
+            policy_a , log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
+            if self.critic_ensemble:
+                Q_list = self.q_critic_target(s, policy_a)
+                assert Q_list.shape[0] == self.n_critic
+                Q_min = Q_list.min(0).values.unsqueeze(-1)
+            else:
+                current_Q1, current_Q2 = self.q_critic(s, policy_a)
         #########################################
         ### Jπ(θ) = E[α * logπ(a|s) - Q(s,a)] ###
         a_loss = (self.alpha * log_pi_a - Q_min).mean()
@@ -466,7 +465,7 @@ class SAC_continuous():
         #----------------------------- ↓↓↓↓↓ Update Target Net ↓↓↓↓↓ ------------------------------#
         for param, target_param in zip(self.q_critic.parameters(), self.q_critic_target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-        if self.soft_update_v:
+        if self.use_v and self.soft_update_v:
             for param, target_param in zip(self.v_critic.parameters(), self.v_critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
@@ -476,7 +475,8 @@ class SAC_continuous():
 
         torch.save(self.actor.state_dict(), model_dir / f"actor.pth")
         torch.save(self.q_critic.state_dict(), model_dir / f"q.pth")
-        torch.save(self.v_critic.state_dict(), model_dir / f"v.pth")
+        if self.use_v:
+            torch.save(self.v_critic.state_dict(), model_dir / f"v.pth")
         if self.robust:
             torch.save(self.transition.state_dict(), model_dir / f"tran.pth")
 
@@ -485,6 +485,7 @@ class SAC_continuous():
 
         self.actor.load_state_dict(torch.load(model_dir / f"actor.pth", map_location=self.device, weights_only=True))
         self.q_critic.load_state_dict(torch.load(model_dir / f"q.pth", map_location=self.device, weights_only=True))
-        self.v_critic.load_state_dict(torch.load(model_dir / f"v.pth", map_location=self.device, weights_only=True))
+        if self.use_v:
+            self.v_critic.load_state_dict(torch.load(model_dir / f"v.pth", map_location=self.device, weights_only=True))
         if self.robust:
             self.transition.load_state_dict(torch.load(model_dir / f"tran.pth", map_location=self.device, weights_only=True))
