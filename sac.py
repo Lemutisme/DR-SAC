@@ -228,11 +228,10 @@ class SAC_continuous():
         if self.use_v:
             self.v_critic = V_Critic(self.state_dim, self.hid_dim, self.net_layer).to(self.device)
             self.v_critic_optimizer = torch.optim.AdamW(self.v_critic.parameters(), lr=self.c_lr)
-            if self.soft_update_v:
-                self.v_critic_target = copy.deepcopy(self.v_critic)
-                # Freeze target networks with respect to optimizers (only update via polyak averaging)
-                for p in self.v_critic_target.parameters():
-                    p.requires_grad = False
+            self.v_critic_target = copy.deepcopy(self.v_critic)
+            # Freeze target networks with respect to optimizers (only update via polyak averaging)
+            for p in self.v_critic_target.parameters():
+                p.requires_grad = False
 
         # Option of vectorized / parallel(limit to 2) critics
         if self.critic_ensemble:
@@ -385,7 +384,7 @@ class SAC_continuous():
 
         with torch.no_grad():
             if self.use_v:
-                V_next = self.v_critic_target(s_next) if self.soft_update_v else self.v_critic(s_next)
+                V_next = self.v_critic_target(s_next)
             else:
                 a_next , log_pi_a_next = self.actor(s_next, deterministic=False, with_logprob=True)
                 if self.critic_ensemble:
@@ -465,7 +464,7 @@ class SAC_continuous():
         #----------------------------- ↓↓↓↓↓ Update Target Net ↓↓↓↓↓ ------------------------------#
         for param, target_param in zip(self.q_critic.parameters(), self.q_critic_target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-        if self.use_v and self.soft_update_v:
+        if self.use_v:
             for param, target_param in zip(self.v_critic.parameters(), self.v_critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
