@@ -1,0 +1,65 @@
+# config/dr_ail_config.yaml
+# Configuration for Distributionally Robust Adversarial Imitation Learning (DR-AIL)
+
+# Environment settings
+env_name: "Pendulum-v1"  # Can be changed via command line
+seed: 42
+
+# Device settings
+device: "cuda"  # or "cpu"
+
+# Expert data path
+expert_data_path: "./datasets/pendulum_expert"  # Path to expert demonstrations
+
+# SAC hyperparameters
+gamma: 0.99
+tau: 0.005  # Soft update coefficient for target networks
+alpha: 0.2  # Initial temperature
+initial_alpha: 0.2
+adaptive_alpha: true
+alpha_lr: 3e-4
+
+# Network architecture
+net_width: 256  # Hidden layer width for actor/critic
+net_layers: 2   # Number of hidden layers
+disc_hidden_dim: 256  # Discriminator hidden dimension
+disc_hidden_layers: 2
+vae_hidden_dim: 256
+vae_hidden_layers: 2
+latent_dim: 10  # VAE latent dimension
+num_vae_models: 5  # Number of VAEs in ensemble
+
+# Learning rates
+actor_lr: 3e-4
+critic_lr: 3e-4
+disc_lr: 3e-4
+vae_lr: 5e-4
+beta_lr: 3e-4
+
+# Training parameters
+num_iterations: 100000
+batch_size: 256
+start_timesteps: 1000  # Random exploration steps
+eval_freq: 1000
+
+# Robustness parameters
+kl_radius_scale: 0.1  # Scale factor for KL radius based on uncertainty
+vae_kl_weight: 0.5  # Weight for KL term in VAE loss
+use_grad_penalty: true  # Use gradient penalty for discriminator
+
+# Save path
+save_path: "./models/DR_AIL/${env_name}"
+
+# Hydra configuration
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  job:
+    name: dr_ail_${env_name}
+  job_logging:
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'

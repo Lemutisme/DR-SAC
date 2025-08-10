@@ -1,4 +1,3 @@
-name: RL
 channels:
   - defaults
   - https://repo.anaconda.com/pkgs/main
@@ -81,4 +80,3 @@ dependencies:
       - typing-extensions==4.12.2
       - werkzeug==3.1.3
       - zipp==3.21.0
-prefix: /home/calus/miniconda3/envs/RL
