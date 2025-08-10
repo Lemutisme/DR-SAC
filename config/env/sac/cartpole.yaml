@@ -1,0 +1,10 @@
+# @package _global_
+
+# ContinuousCartPole environment config
+
+env_name: ContinuousCartPole
+env_index: 1
+max_train_steps: 50000 # 
+
+a_lr: 0.0003 # 5e-4
+c_lr: 0.0003 # 5e-4

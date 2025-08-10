@@ -9,92 +9,34 @@ from numpy.random import normal
 import scipy.stats as stats
 import math
 import gymnasium as gym
+import mujoco
 
 from gymnasium.envs.classic_control.pendulum import PendulumEnv, angle_normalize
 from gymnasium.envs.box2d.lunar_lander import LunarLander
 from continuous_cartpole import ContinuousCartPoleEnv
+from gymnasium.envs.mujoco.half_cheetah_v5 import HalfCheetahEnv
+from gymnasium.envs.mujoco.reacher_v5 import ReacherEnv
 from gymnasium.envs.registration import register
 
 logger = logging.getLogger(__name__)
 
-#----------------------------- ↓↓↓↓↓ Custom Env (Change Step Function) ↓↓↓↓↓ ------------------------------#
-# Custom Pendulum Env (Add Noise in Step Function)
-class CustomPendulum(PendulumEnv):
-    def __init__(self, render_mode=None, spread=0.0, type="gaussian", adv=False):
-        super().__init__(render_mode=render_mode)
-        self.noise_spread = spread #
-        self.type = type # noise distribution
-        self.adv = adv # adverse noise
-        
-        if type == "gaussian":
-            self.dist = stats.norm(loc=0, scale=spread)
-        elif type == "cauchy":
-            self.dist = stats.cauchy(loc=0, scale=spread)
-        elif type == "laplace":
-            self.dist = stats.laplace(loc=0, scale=spread)
-        elif type == "t":
-            self.dist = stats.t(df=2, loc=0, scale=spread)
-        elif type == "uniform":
-            self.dist = stats.uniform(loc=-0.5*spread, scale=spread)
-        logger.info(f"Pendulum Env with {type} theta noise spread={spread}.")
-        if adv:
-            logger.info(f"Always adverse noise.")
-        
-    def step(self, u):
-        th, thdot = self.state  # th := theta
-
-        g = self.g
-        m = self.m
-        l = self.l
-        dt = self.dt
-
-        u = np.clip(u, -self.max_torque, self.max_torque)[0]
-        self.last_u = u  # for rendering
-        costs = angle_normalize(th) ** 2 + 0.1 * thdot**2 + 0.001 * (u**2)
-
-        newthdot = thdot + (3 * g / (2 * l) * np.sin(th) + 3.0 / (m * l**2) * u) * dt
-        newthdot = np.clip(newthdot, -self.max_speed, self.max_speed)
-        newth = th + newthdot * dt 
-        #############################################################	
-        # Universal noise
-        if not self.adv:
-            newth += self.dist.rvs()
-        
-        # Always adverse noise 
-        else:
-            newth += abs(self.dist.rvs()) * np.sign(newth) 
-        #############################################################	
-
-        self.state = np.array([newth, newthdot])
-
-        if self.render_mode == "human":
-            self.render()
-        # truncation=False as the time limit is handled by the `TimeLimit` wrapper added during `make`
-        return self._get_obs(), -costs, False, False, {}
-
-register(
-    id="CustomPendulum-v1",
-    entry_point="environment_modifiers:CustomPendulum",
-    max_episode_steps=200,
-    kwargs={'spread': 0.0, 'type':'gaussian', 'adv':False}
-)
-
 #----------------------------- ↓↓↓↓↓ Parameter Shifted Env ↓↓↓↓↓ ------------------------------#
+# Customized Pendulum
 class ParameterShiftedPendulum(PendulumEnv):
-    def __init__(self, render_mode=None, g_factor=1.0, m_factor=1.0, l_factor=1.0):
+    def __init__(self, render_mode=None, gravity_factor=1.0, mass_factor=1.0, length_factor=1.0):
         """
         Pendulum environment with shifted physical parameters.
         
         Args:
-            g_factor: Factor to multiply gravity by
-            m_factor: Factor to multiply mass by
-            l_factor: Factor to multiply length by
+            gravity_factor: Factor to multiply gravity by
+            mass_factor: Factor to multiply mass by
+            length_factor: Factor to multiply length by
         """
         super().__init__(render_mode=render_mode)
         # Modify the physical parameters
-        self.g = self.g * g_factor  # Gravity
-        self.m = self.m * m_factor  # Mass
-        self.l = self.l * l_factor  # Length
+        self.g = self.g * gravity_factor  # Gravity
+        self.m = self.m * mass_factor  # Mass
+        self.l = self.l * length_factor  # Length
         
         logger.info(f"Parameter Shifted Pendulum: g={self.g:.2f}, m={self.m:.2f}, l={self.l:.2f}")
 
@@ -103,11 +45,12 @@ register(
     id="ParameterShiftedPendulum-v1",
     entry_point="environment_modifiers:ParameterShiftedPendulum",
     max_episode_steps=200,
-    kwargs={'g_factor':1.0, 'm_factor':1.0, 'l_factor':1.0}
+    kwargs={'gravity_factor':1.0, 'mass_factor':1.0, 'length_factor':1.0}
 )
 
+# Customized LunarLander
 class ParameterShiftedLunarLander(LunarLander):
-    def __init__(self, render_mode=None, gravity_factor=1.0, wind_power=0.0, turbulence_power=0.0, engine_factor=1.0):
+    def __init__(self, render_mode=None, gravity_factor=1.0, wind_power=0.0, turbulence_power=1.5, engine_factor=1.0):
         """
         LunarLander environment with shifted parameters.
 
@@ -120,15 +63,13 @@ class ParameterShiftedLunarLander(LunarLander):
                          gravity=-10.0*gravity_factor,
                          enable_wind=(wind_power!=0), wind_power=wind_power,
                          turbulence_power=turbulence_power)
-        # self.gravity_factor = gravity_factor
-        # self.wind_power = wind_power
-        # self.turbulence_power = turbulence_power
         self.engine_factor = engine_factor
         logger.info(f"Parameter Shifted LunarLander: gravity_factor={gravity_factor:.2f}, "
                     f"wind_power={wind_power:.2f},"
                     f"turbulence_power={turbulence_power:.2f},"
                     f"engine_factor={engine_factor:.2f}")
-    
+        
+    # We redefine step function to change MAIN_ENGINE_POWER and SIDE_ENGINE_POWER
     def step(self, action):
         # Constant
         FPS = 50
@@ -349,69 +290,110 @@ class ParameterShiftedLunarLander(LunarLander):
         # truncation=False as the time limit is handled by the `TimeLimit` wrapper added during `make`
         return np.array(state, dtype=np.float32), reward, terminated, False, {}
 
-    # def step(self, action):
-    #     # Apply wind as a constant force in the x direction
-    #     if self.wind_power != 0:
-    #         self.lander.ApplyForceToCenter(
-    #             (self.wind_power, 0),
-    #             True
-    #         )
-
-    #     # Apply random turbulence
-    #     if self.turbulence_power > 0:
-    #         turbulence = np.random.normal(0, self.turbulence_power, size=2)
-    #         self.lander.ApplyForceToCenter(
-    #             (turbulence[0], turbulence[1]),
-    #             True
-    #         )
-
-    #     # Modify gravity
-    #     original_gravity = self.world.gravity
-    #     self.world.gravity = (original_gravity[0], original_gravity[1] * self.gravity_factor)
-
-    #     # Call original step function
-    #     obs, reward, terminated, truncated, info = super().step(action)
-
-    #     # Restore original gravity for consistency
-    #     self.world.gravity = original_gravity
-        
-    #     return obs, reward, terminated, truncated, info
-
 register(
     id="ParameterShiftedLunarLander-v3",
     entry_point="environment_modifiers:ParameterShiftedLunarLander",
     max_episode_steps=1000,
-    kwargs={'gravity_factor':1.0, 'wind_power':0.0, 'turbulence_power':0.0, "engine_factor": 1.0}
+    kwargs={'gravity_factor':1.0, 'wind_power':0.0, 'turbulence_power':1.5, "engine_factor": 1.0}
 )
 
+# Customized Continuous Cartpole
 class ParameterShiftedCartpole(ContinuousCartPoleEnv):
-    def __init__(self, gravity_factor=1.0, len_factor=1.0, force_mag_factor=1.0):
+    def __init__(self, gravity_factor=1.0, length_factor=1.0, mass_factor=1.0, force_mag_factor=1.0):
         """
         Cartpole environment with shifted parameters.
 
         Args:
             gravity_factor: Factor to multiply gravity by
-            len_factor: Factor to multiply length by
+            length_factor: Factor to multiply length by
             force_mag_factor: Factor to multiply force magnitude by
         """
         super().__init__()
-        self.gravity *= gravity_factor # 9.8
-        self.length *= len_factor             # 0.5
-        self.force_mag *= force_mag_factor    # 30
+        self.gravity *= gravity_factor           # 9.8
+        self.length *= length_factor             # 0.5
+        self.masscart *= mass_factor
+        self.masspole *= mass_factor
+        self.total_mass = (self.masspole + self.masscart)
+        self.force_mag *= force_mag_factor       # 30
         logger.info(f"Parameter Shifted Cartpole: gravity_factor={gravity_factor:.2f}, "
-                    f"length factor={len_factor:.2f}, force_mag_factor={force_mag_factor:.2f}")
+                    f"length factor={length_factor:.2f}, "
+                    f"mass factor={mass_factor:.2f}, "
+                    f"force_mag_factor={force_mag_factor:.2f}")
         
 register(
     id="ParameterShiftedCartpole-v0",
     entry_point="environment_modifiers:ParameterShiftedCartpole",
     max_episode_steps=500,
-    kwargs={'gravity_factor':1.0, 'len_factor':1.0, 'force_mag_factor':1.0}
+    kwargs={'gravity_factor':1.0, 'length_factor':1.0, 'mass_factor':1.0, 'force_mag_factor':1.0}
+)
+
+# Customized Halfcheetah
+class ParameterShiftedHalfCheetah(HalfCheetahEnv):
+    def __init__(self, back_stiff=1.0, front_stiff=1.0,
+                       back_damping=1.0, front_damping=1.0):
+        super().__init__()
+        # Joints on the front
+        for name in ['fthigh', 'fshin', 'ffoot']:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            self.model.jnt_stiffness[joint_id] *= front_stiff
+            self.model.dof_damping[joint_id] *= front_damping
+         # Joints on the back
+        for name in ['bthigh', 'bshin', 'bfoot']:
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            self.model.jnt_stiffness[joint_id] *= back_stiff
+            self.model.dof_damping[joint_id] *= back_damping
+        
+        logger.info("Parameter Shifted HalfCheetah: "
+                    f"joint stiffness={self.model.jnt_stiffness[:]}, "
+                    f"joint damping={self.model.dof_damping[:]}.")
+        
+register(
+    id="ParameterShiftedHalfCheetah-v5",
+    entry_point="environment_modifiers:ParameterShiftedHalfCheetah",
+    max_episode_steps=1000,
+    kwargs={'back_stiff':1.0, 'front_stiff':1.0, 'back_damping':1.0, 'front_damping':1.0}
+)
+
+# Customized Reacher
+class ParameterShiftedReacher(ReacherEnv):
+    def __init__(self, joint0_stiff=0.0, joint1_stiff=0.0,
+                       joint0_damping=1.0, joint1_damping=1.0,
+                       act_ctrlrange=1.0):
+        """
+        Cartpole environment with shifted parameters.
+
+        Args:
+           
+        """
+        # Now modify attributes
+        super().__init__()
+        
+        joint0_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'joint0')
+        joint1_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'joint1')
+        
+        self.model.jnt_stiffness[joint0_id] = joint0_stiff # default:0.0
+        self.model.jnt_stiffness[joint1_id] = joint1_stiff # default:0.0
+        self.model.dof_damping[joint0_id] *= joint0_damping # default:1.0
+        self.model.dof_damping[joint1_id] *= joint1_damping # default:1.0
+        # Change the control range of actuator
+        self.model.actuator_ctrlrange *= act_ctrlrange
+        
+        logger.info(f"Parameter Shifted Reacher: "
+                    f"joint stiffness={self.model.jnt_stiffness}, "
+                    f"joint damping={self.model.dof_damping}, "
+                    f"acuator control range={self.model.actuator_ctrlrange}")
+        
+register(
+    id="ParameterShiftedReacher-v5",
+    entry_point="environment_modifiers:ParameterShiftedReacher",
+    max_episode_steps=50,
+    kwargs={'joint0_stiff':0.0, 'joint1_stiff':0.0, 'joint0_damping':1.0, 'joint1_damping':1.0, 'act_ctrlrange':1.0}
 )
 
 #----------------------------- ↓↓↓↓↓ Env Modification Wrapper ↓↓↓↓↓ ------------------------------#
 # Observation Noise Wrapper
 class ObservationNoiseWrapper(gym.Wrapper):
-    def __init__(self, env, noise_type='gaussian', noise_level=0.1, noise_freq=1.0):
+    def __init__(self, env, noise_type='gaussian', noise_level=0.1, noise_freq=1.0, noise_dim=[]):
         """
         Add noise to observations (all dimensions).
 
@@ -426,26 +408,35 @@ class ObservationNoiseWrapper(gym.Wrapper):
         self.noise_type = noise_type
         self.noise_level = noise_level
         self.noise_freq = noise_freq
+        # Some dimension valeus are not appropriate for adding noise: e.g. binary, sin, cos.
+        if not noise_dim:
+            self.noise_dim = range(env.observation_space.shape[0])
+        else:
+            self.noise_dim = noise_dim
         self.observation_space = env.observation_space
-        logger.info(f"Observation {noise_type} noise with level {noise_level}")
+        logger.info(f"Observation {noise_type} noise with level {noise_level} in dim {self.noise_dim}")
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        return self._add_noise(obs), info
+        return self.add_noise(obs), info
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         # Apply noise based on frequency
         if np.random.random() < self.noise_freq:
-            obs = self._add_noise(obs)
+            obs = self.add_noise(obs)
         return obs, reward, terminated, truncated, info
 
-    def _add_noise(self, obs):
+    def add_noise(self, obs):
+        noise = np.zeros_like(obs)
         if self.noise_type == 'gaussian':
-            noise = np.random.normal(0, self.noise_level, size=obs.shape)
+            noise = np.zeros_like(obs)
+            for i in self.noise_dim:
+                noise[i] = np.random.normal(0, self.noise_level)
             return obs + noise
         elif self.noise_type == 'uniform':
-            noise = np.random.uniform(-self.noise_level, self.noise_level, size=obs.shape)
+            for i in self.noise_dim:
+                noise[i] = np.random.uniform(-self.noise_level, self.noise_level)
             return obs + noise
         elif self.noise_type == 'saltpepper':
             # Salt and pepper noise
@@ -458,7 +449,8 @@ class ObservationNoiseWrapper(gym.Wrapper):
         elif self.noise_type == 'adversarial':
             # Simple adversarial noise - pushes values away from center
             direction = np.sign(obs)
-            noise = np.abs(np.random.normal(0, self.noise_level, size=obs.shape)) * direction
+            for i in self.noise_dim:
+                noise[i] = np.abs(np.random.normal(0, self.noise_level)) * direction[i]
             return obs + noise
         else:
             return obs
@@ -502,7 +494,7 @@ class ActionPerturbationWrapper(gym.Wrapper):
 
             elif self.perturb_type == 'noise':
                 # Add random noise to action
-                action = action + np.random.normal(loc=0, scale=self.perturb_level, size=action.shape)
+                action = action + np.random.normal(loc=0, scale=self.perturb_level, size=action.shape).astype(np.float32)
                 action = np.clip(action, self.action_space.low, self.action_space.high)
 
             elif self.perturb_type == 'delay':
@@ -636,6 +628,7 @@ class TransitionPerturbationWrapper(gym.Wrapper):
 
         return obs, reward, terminated, truncated, info
 
+
 def create_env_with_mods(env_name, env_config):
     """
     Create environment with modifications based on configuration.
@@ -658,28 +651,7 @@ def create_env_with_mods(env_name, env_config):
         logger.info("No environment modifications applied")
         return train_env, eval_env
 
-    #----------------------------- ↓↓↓↓↓ Self-defined Env ↓↓↓↓↓ ------------------------------#
-    # Custom environments
-    if env_config.use_mods and env_config.custom.enabled:
-         if env_name == "Pendulum-v1": 
-             logger.info("Customizing training environment")
-             train_env = gym.make("CustomPendulum-v1",
-                                  spread=env_config.custom.spread, 
-                                  type=env_config.custom.type, 
-                                  adv=env_config.custom.adv)
-             
-             if env_config.eval.use_modified:
-                 logger.info("Customizing evaluation environment")
-                 if env_config.eval.scale_noise:
-                     env_config.custom.spread *= env_config.eval.noise_scale_factor
-                 eval_env = gym.make("CustomPendulum-v1",
-                                    spread=env_config.custom.spread, 
-                                    type=env_config.custom.type, 
-                                    adv=env_config.custom.adv)
-             else:
-                 eval_env = gym.make(env_name)
-                      
-
+    #----------------------------- ↓↓↓↓↓ Self-defined Env ↓↓↓↓↓ ------------------------------#                    
     # Param_shift environments
     if env_config.use_mods and env_config.param_shift.enabled:
         assert env_config.param_shift.train_apply or env_config.param_shift.eval_apply
@@ -687,18 +659,18 @@ def create_env_with_mods(env_name, env_config):
             if env_config.param_shift.train_apply:
                 logger.info("Applying parameter shift to training environment")
                 train_env = gym.make("ParameterShiftedPendulum-v1",
-                                    g_factor=env_config.param_shift.g_factor,
-                                    m_factor=env_config.param_shift.m_factor,
-                                    l_factor=env_config.param_shift.l_factor)
+                                    gravity_factor=env_config.param_shift.gravity_factor,
+                                    mass_factor=env_config.param_shift.mass_factor,
+                                    length_factor=env_config.param_shift.length_factor)
             else:
                 train_env = gym.make(env_name)
                 
             if env_config.param_shift.eval_apply:
                 logger.info("Applying parameter shift to evaluation environment")
                 eval_env = gym.make("ParameterShiftedPendulum-v1",
-                                    g_factor=env_config.param_shift.g_factor,
-                                    m_factor=env_config.param_shift.m_factor,
-                                    l_factor=env_config.param_shift.l_factor)
+                                    gravity_factor=env_config.param_shift.gravity_factor,
+                                    mass_factor=env_config.param_shift.mass_factor,
+                                    length_factor=env_config.param_shift.length_factor)
             else:
                 eval_env = gym.make(env_name)
                 
@@ -721,14 +693,50 @@ def create_env_with_mods(env_name, env_config):
         elif env_name == "ContinuousCartPole-v0":
             train_env = gym.make("ParameterShiftedCartpole-v0",
                                  gravity_factor=env_config.param_shift.gravity_factor, 
-                                 len_factor=env_config.param_shift.len_factor, 
+                                 length_factor=env_config.param_shift.lenngth_factor,
+                                 mass_factor=env_config.param_shift.mass_factor,
                                  force_mag_factor=env_config.param_shift.force_mag_factor)
             if env_config.eval.use_modified:
                 logger.info("Using modified environment for evaluation")
                 eval_env = gym.make("ParameterShiftedCartpole-v0",
                                  gravity_factor=env_config.param_shift.gravity_factor, 
-                                 len_factor=env_config.param_shift.len_factor, 
+                                 length_factor=env_config.param_shift.length_factor,
+                                 mass_factor=env_config.param_shift.mass_factor, 
                                  force_mag_factor=env_config.param_shift.force_mag_factor)
+            else:
+                eval_env = gym.make(env_name)
+                
+        elif env_name == "HalfCheetah-v5":
+            train_env = gym.make("ParameterShiftedHalfCheetah-v5",
+                                 back_stiff=env_config.param_shift.back_stiff,
+                                 front_stiff=env_config.param_shift.front_stiff,
+                                 back_damping=env_config.param_shift.back_damping,
+                                 front_damping=env_config.param_shift.front_damping)
+            if env_config.eval.use_modified:
+                logger.info("Using modified environment for evaluation")
+                eval_env = gym.make("ParameterShiftedHalfCheetah-v5",
+                                     back_stiff=env_config.param_shift.back_stiff,
+                                     front_stiff=env_config.param_shift.front_stiff,
+                                     back_damping=env_config.param_shift.back_damping,
+                                     front_damping=env_config.param_shift.front_damping)
+            else:
+                eval_env = gym.make(env_name)
+                
+        elif env_name == "Reacher-v5":
+            train_env = gym.make("ParameterShiftedReacher-v5",
+                                 joint0_stiff=env_config.param_shift.joint0_stiff,
+                                 joint1_stiff=env_config.param_shift.joint1_stiff,
+                                 joint0_damping=env_config.param_shift.joint0_damping,
+                                 joint1_damping=env_config.param_shift.joint1_damping,
+                                 act_ctrlrange=env_config.param_shift.act_ctrlrange)
+            if env_config.eval.use_modified:
+                logger.info("Using modified environment for evaluation")
+                eval_env = gym.make("ParameterShiftedReacher-v5",
+                                     joint0_stiff=env_config.param_shift.joint0_stiff,
+                                     joint1_stiff=env_config.param_shift.joint1_stiff,
+                                     joint0_damping=env_config.param_shift.joint0_damping,
+                                     joint1_damping=env_config.param_shift.joint1_damping,
+                                     act_ctrlrange=env_config.param_shift.act_ctrlrange)
             else:
                 eval_env = gym.make(env_name)
 
@@ -738,12 +746,20 @@ def create_env_with_mods(env_name, env_config):
 
     # Apply observation noise if configured
     if env_config.observation_noise.enabled:
+        noise_dim = []
+        # Dimension 6-7 in LunarLander state vectors are bianry
+        if env_name == 'LunarLanderContinuous-v3':
+            noise_dim = range(6)
+        # Dimension 0-3 in Reacher state vectors are trigonometric values
+        elif env_name == 'Reacher-v5':
+            noise_dim = range(4,10)
         logger.info(f"Adding observation noise: {env_config.observation_noise.type} with level {env_config.observation_noise.level}")
         train_env = ObservationNoiseWrapper(
             train_env,
             noise_type=env_config.observation_noise.type,
             noise_level=env_config.observation_noise.level,
-            noise_freq=env_config.observation_noise.frequency
+            noise_freq=env_config.observation_noise.frequency,
+            noise_dim=noise_dim
         )
 
     # Apply action perturbation if configured
@@ -784,18 +800,15 @@ def create_env_with_mods(env_name, env_config):
         logger.info("Using modified environment for evaluation")
 
         # Create evaluation environment with same modifications but potentially different parameters
-        if env_config.observation_noise.enabled:
-            eval_noise_level = env_config.observation_noise.level
-            if env_config.eval.scale_noise:
-                eval_noise_level *= env_config.eval.noise_scale_factor
-
+        if env_config.observation_noise.enabled and env_config.eval.include_observation_perturb:
             eval_env = ObservationNoiseWrapper(
                 eval_env,
                 noise_type=env_config.observation_noise.type,
-                noise_level=eval_noise_level,
-                noise_freq=env_config.observation_noise.frequency
+                noise_level=env_config.observation_noise.level,
+                noise_freq=env_config.observation_noise.frequency,
+                noise_dim=noise_dim
             )
-            logger.info(f"Evaluation environment using observation noise level: {eval_noise_level}")
+            logger.info(f"Evaluation environment using observation noise level: {env_config.observation_noise.level}")
 
         # Apply other modifications to eval env if needed...
         if env_config.action_perturb.enabled and env_config.eval.include_action_perturb:

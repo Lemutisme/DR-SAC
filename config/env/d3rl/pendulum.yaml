@@ -1,0 +1,6 @@
+# @package _global_
+
+# Pendulum environment config
+
+env_name: Pendulum-v1
+env_index: 0

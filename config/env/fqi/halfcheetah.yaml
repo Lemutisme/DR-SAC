@@ -1,0 +1,16 @@
+# @package _global_
+
+env_name: HalfCheetah-v5
+env_index: 3
+eval_freq: 1000
+save_interval: 1000
+max_trn_steps: 50000
+max_vae_trn_step: 5000
+
+# Adam stepsize*
+adam_lr: 3e-4
+# learning rate of actor
+actor_lr: 6e-4
+critic_lr: 6e-4
+
+vmin: -500
