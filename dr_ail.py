@@ -171,17 +171,32 @@ class DR_AIL:
             self.discriminator.parameters(), lr=self.disc_lr
         )
 
-        # Initialize VAE ensemble for uncertainty-aware nominal model
-        self.vae_ensemble = VAEEnsemble(
-            self.state_dim, self.action_dim,
-            num_models=self.num_vae_models,
-            hidden_dim=self.vae_hidden_dim,
-            hidden_layers=self.vae_hidden_layers,
-            latent_dim=self.latent_dim
-        ).to(self.device)
-        self.vae_optimizer = torch.optim.Adam(
-            self.vae_ensemble.parameters(), lr=self.vae_lr
-        )
+        if self.robust:
+            print("Initializing DR-AIL with ROBUST components.")
+            # Initialize VAE ensemble for uncertainty-aware nominal model
+            self.vae_ensemble = VAEEnsemble(
+                self.state_dim, self.action_dim,
+                num_models=self.num_vae_models,
+                hidden_dim=self.vae_hidden_dim,
+                hidden_layers=self.vae_hidden_layers,
+                latent_dim=self.latent_dim
+            ).to(self.device)
+            self.vae_optimizer = torch.optim.Adam(
+                self.vae_ensemble.parameters(), lr=self.vae_lr
+            )
+            # Initialize Lagrange multiplier network for β(s,a)
+            self.beta_network = dual(
+                self.state_dim, self.action_dim,
+                hid_dim=self.net_width,
+                hid_layers=self.net_layers
+            ).to(self.device)
+            self.beta_optimizer = torch.optim.Adam(
+                self.beta_network.parameters(), lr=self.beta_lr
+            )
+        else:
+            print("Initializing standard AIRL baseline.")
+            self.vae_ensemble = None
+            self.beta_network = None
 
         # Initialize policy networks (actor)
         self.actor = Actor(
@@ -212,16 +227,6 @@ class DR_AIL:
         ).to(self.device)
         self.q_critic_optimizer = torch.optim.Adam(
             self.q_critic.parameters(), lr=self.critic_lr
-        )
-
-        # Initialize Lagrange multiplier network for β(s,a)
-        self.beta_network = dual(
-            self.state_dim, self.action_dim,
-            hid_dim=self.net_width,  # <-- Use hid_dim (int)
-            hid_layers=self.net_layers
-        ).to(self.device)
-        self.beta_optimizer = torch.optim.Adam(
-            self.beta_network.parameters(), lr=self.beta_lr
         )
 
         # Initialize replay buffer for policy samples
@@ -359,6 +364,32 @@ class DR_AIL:
 
         gradient_penalty = lambda_gp * ((grad_norm - 1) ** 2).mean()
         return gradient_penalty
+
+    def update_critic(self, batch):
+        """
+        Update Q-function using the standard Bellman operator (for AIRL baseline).
+        """
+        states, actions, next_states = batch
+
+        # Get reward from discriminator
+        with torch.no_grad():
+            rewards = self.discriminator.get_reward(states, actions, next_states)
+
+        # Compute target V-value using target networks
+        with torch.no_grad():
+            v_next = self.v_critic_target(next_states)
+            q_targets = rewards + self.gamma * v_next
+
+        # Update Q-networks
+        q1, q2 = self.q_critic(states, actions)
+        q_loss = F.mse_loss(q1, q_targets) + F.mse_loss(q2, q_targets)
+
+        # Optimize the Q-critics
+        self.q_critic_optimizer.zero_grad()
+        q_loss.backward()
+        self.q_critic_optimizer.step()
+
+        return q_loss.item()
 
     def update_robust_critic(self, batch):
         """
@@ -500,8 +531,9 @@ class DR_AIL:
         """
         Main training loop for DR-AIL
         """
-        # Phase 1: Pre-train VAE ensemble
-        self.pretrain_vae_ensemble(expert_dataset, num_epochs=50)
+        # Phase 1: Pre-train VAE ensemble only if in robust mode
+        if self.robust:
+            self.pretrain_vae_ensemble(expert_dataset, num_epochs=50)
 
         # Phase 2: Integrated Adversarial Training
         print("\nPhase 2: Adversarial Training...")
@@ -551,9 +583,17 @@ class DR_AIL:
 
                 # Generate next states using VAE ensemble mean
                 with torch.no_grad():
-                    policy_next_states = self.vae_ensemble.sample_next_states(
-                        policy_states, policy_actions, num_samples=1
-                    ).squeeze(1)
+                    if self.robust:
+                        # For DR-AIL, sample from the learned dynamics model
+                        policy_next_states = self.vae_ensemble.sample_next_states(
+                            policy_states, policy_actions, num_samples=1
+                        ).squeeze(1)
+                    else:
+                        # For standard AIRL, just use the actual next states from the buffer
+                        rb_batch = self.replay_buffer.sample(batch_size)
+                        policy_states, policy_actions = rb_batch[0], rb_batch[1]
+                        policy_next_states = rb_batch[3] # Get s_next from buffer
+
 
                 policy_batch = (policy_states, policy_actions, policy_next_states)
 
@@ -561,8 +601,12 @@ class DR_AIL:
                 disc_loss = self.update_discriminator(expert_batch, policy_batch)
 
                 # Update robust critic
-                critic_batch = expert_batch  # Can also mix with policy samples
-                q_loss = self.update_robust_critic(critic_batch)
+                critic_batch = expert_batch
+                # Conditionally call the appropriate critic update
+                if self.robust:
+                    q_loss = self.update_robust_critic(critic_batch)
+                else:
+                    q_loss = self.update_critic(critic_batch)
 
                 # Update actor
                 actor_states = expert_batch[0]
@@ -648,6 +692,7 @@ def main(cfg: DictConfig):
         state_dim=state_dim,
         action_dim=action_dim,
         max_action=max_action,
+        robust=cfg.robust,
         device=cfg.device,
         gamma=cfg.gamma,
         tau=cfg.tau,

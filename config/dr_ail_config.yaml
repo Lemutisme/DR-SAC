@@ -42,6 +42,9 @@ batch_size: 256
 start_timesteps: 1000  # Random exploration steps
 eval_freq: 1000
 
+# Algorithm version control
+robust: true  # Set to false to run standard AIRL
+
 # Robustness parameters
 kl_radius_scale: 0.1  # Scale factor for KL radius based on uncertainty
 vae_kl_weight: 0.5  # Weight for KL term in VAE loss
