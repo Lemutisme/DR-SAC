@@ -12,8 +12,8 @@ import hydra
 from omegaconf import DictConfig
 
 # Import your existing modules
-from sac import Actor, V_Critic, Double_Q_Critic, TransitionVAE, dual
-from utils import build_net, evaluate_policy_SAC
+from sac import Actor, V_Critic, Double_Q_Critic, MLPTransitionVAE, dual
+from utils import build_net, evaluate_policy
 from ReplayBuffer import ReplayBuffer
 
 
@@ -66,8 +66,8 @@ class VAEEnsemble(nn.Module):
         
         # Create ensemble of VAEs
         self.models = nn.ModuleList([
-            TransitionVAE(state_dim, action_dim, state_dim, 
-                         hidden_dim=hidden_dim, hidden_layers=hidden_layers, 
+            MLPTransitionVAE(state_dim, action_dim, 
+                         hidden_dim=hidden_dim, hidden_layer=hidden_layers, 
                          latent_dim=latent_dim)
             for _ in range(num_models)
         ])
@@ -81,20 +81,32 @@ class VAEEnsemble(nn.Module):
             for model in self.models:
                 outputs.append(model(s, a, s_next))
             return outputs
-    
+
     def sample_next_states(self, s, a, num_samples=10):
         """
         Sample next states from the ensemble
         Returns: (batch_size, num_samples, state_dim)
         """
         all_samples = []
-        for model in self.models:
-            samples = model.sample(s, a, num_samples // self.num_models)
-            all_samples.append(samples)
+
+        # Randomly choose which model to use for each of the num_samples needed
+        model_indices = np.random.choice(self.num_models, size=num_samples, replace=True)
+
+        # For each model in the ensemble, generate the number of samples it was chosen for
+        for i in range(self.num_models):
+            count = np.count_nonzero(model_indices == i)
+            if count > 0:
+                # Generate 'count' samples from the i-th model
+                samples = self.models[i].sample(s, a, count)
+                all_samples.append(samples)
         
-        # Concatenate samples from all models
-        combined = torch.cat(all_samples, dim=1)
-        return combined
+        # Handle the edge case where num_samples is 0
+        if not all_samples:
+            return torch.empty(s.size(0), 0, self.state_dim, device=s.device)
+
+        # Concatenate the samples from all chosen models
+        combined_samples = torch.cat(all_samples, dim=1)
+        return combined_samples
     
     def get_uncertainty(self, s, a, num_samples=50):
         """
@@ -178,7 +190,8 @@ class DR_AIL:
         # Initialize policy networks (actor)
         self.actor = Actor(
             self.state_dim, self.action_dim,
-            hid_shape=[self.net_width],
+            max_action=self.max_action,
+            hid_dim=self.net_width,
             hid_layers=self.net_layers
         ).to(self.device)
         self.actor_optimizer = torch.optim.Adam(
@@ -188,7 +201,7 @@ class DR_AIL:
         # Initialize value networks (V and Q critics)
         self.v_critic = V_Critic(
             self.state_dim,
-            hid_shape=[self.net_width],
+            hid_dim=self.net_width,  # <-- Use hid_dim (int)
             hid_layers=self.net_layers
         ).to(self.device)
         self.v_critic_optimizer = torch.optim.Adam(
@@ -198,7 +211,7 @@ class DR_AIL:
         
         self.q_critic = Double_Q_Critic(
             self.state_dim, self.action_dim,
-            hid_shape=[self.net_width],
+            hid_dim=self.net_width,  # <-- Use hid_dim (int)
             hid_layers=self.net_layers
         ).to(self.device)
         self.q_critic_optimizer = torch.optim.Adam(
@@ -208,7 +221,7 @@ class DR_AIL:
         # Initialize Lagrange multiplier network for β(s,a)
         self.beta_network = dual(
             self.state_dim, self.action_dim,
-            hid_shape=[self.net_width],
+            hid_dim=self.net_width,  # <-- Use hid_dim (int)
             hid_layers=self.net_layers
         ).to(self.device)
         self.beta_optimizer = torch.optim.Adam(
@@ -402,14 +415,25 @@ class DR_AIL:
         q2_loss = F.mse_loss(q2, q_targets)
         q_loss = q1_loss + q2_loss
 
-        self.q_critic_optimizer.zero_grad()
-        q_loss.backward()
-        self.q_critic_optimizer.step()
+        # combines the Q-critic loss and the beta network loss
+        # into a single objective for a joint, efficient update.
 
-        # Update β network to maximize dual objective
+        # The beta network's goal is to maximize the dual objective (robust_v_next).
+        # We frame this as minimizing its negative value.
         beta_loss = -(robust_v_next).mean()
+
+        # Combine the losses
+        total_critic_loss = q_loss + beta_loss
+
+        # Zero gradients for both optimizers
+        self.q_critic_optimizer.zero_grad()
         self.beta_optimizer.zero_grad()
-        beta_loss.backward()
+
+        # Perform a single backward pass on the combined loss
+        total_critic_loss.backward()
+
+        # Step both optimizers
+        self.q_critic_optimizer.step()
         self.beta_optimizer.step()
 
         return q_loss.item()
@@ -467,6 +491,13 @@ class DR_AIL:
             )
 
         return v_loss.item()
+    
+    def select_action(self, state, deterministic=True):
+        """Selects an action from the policy for evaluation."""
+        with torch.no_grad():
+            state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
+            action, _ = self.actor(state_tensor, deterministic=deterministic, with_logprob=False)
+        return action.cpu().numpy().flatten()
 
     def train(self, env, expert_dataset: ExpertDataset, 
               num_iterations: int = 100000, batch_size: int = 256,
@@ -552,9 +583,8 @@ class DR_AIL:
 
             # Evaluation
             if t % eval_freq == 0:
-                eval_reward = evaluate_policy_SAC(
-                    env, self.actor, device=self.device, 
-                    turns=3, seed=self.seed
+                eval_reward = evaluate_policy(
+                    env, self, turns=3
                 )
                 print(f"\nEvaluation at step {t}: Avg Reward = {eval_reward:.2f}\n")
 
@@ -611,6 +641,9 @@ def main(cfg: DictConfig):
     env = gym.make(cfg.env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
+    max_action = env.action_space.high.tolist()  # Action range [-max_action, max_action]
+    # min_action = env.action_space.low.tolist() # Action range [-max_action, max_action]
+    # max_e_steps = env._max_episode_steps
     
     # Load expert dataset
     expert_dataset = ExpertDataset(cfg.expert_data_path, device=cfg.device)
@@ -619,6 +652,7 @@ def main(cfg: DictConfig):
     agent = DR_AIL(
         state_dim=state_dim,
         action_dim=action_dim,
+        max_action=max_action,
         device=cfg.device,
         gamma=cfg.gamma,
         tau=cfg.tau,

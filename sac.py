@@ -27,7 +27,10 @@ class Actor(nn.Module):
 
         self.LOG_STD_MAX = 2
         self.LOG_STD_MIN = -20
-        self.max_action = max_action
+        # self.max_action = max_action
+
+        # register max_action as a buffer:
+        self.register_buffer('max_action', torch.tensor(max_action, dtype=torch.float32))
         
         # init as in the EDAC paper
         for layer in self.a_net[0:-1:2]:
@@ -194,8 +197,8 @@ class MLPTransitionVAE(nn.Module):
         s_expanded = s.unsqueeze(1).expand(-1, num_samples, -1)
         a_expanded = a.unsqueeze(1).expand(-1, num_samples, -1)
         s_next_samples = self.decode(s_expanded, a_expanded, z)
-        s_next_samples = self.wrapper(s_next_samples)
-        return s_next_samples   
+        # s_next_samples = self.wrapper(s_next_samples)
+        return s_next_samples
 
 class ExpActivation(nn.Module):
     def forward(self, x):

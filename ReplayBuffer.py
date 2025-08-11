@@ -4,7 +4,7 @@ from pathlib import Path
 from utils import Reward_adapter
 
 class ReplayBuffer(object):
-    def __init__(self, state_dim, action_dim, max_size, device, EnvIndex):
+    def __init__(self, state_dim, action_dim, max_size, device, EnvIndex=0):
         self.max_size = max_size
         self.device = device
         self.ptr = 0
