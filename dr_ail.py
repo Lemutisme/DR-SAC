@@ -3,15 +3,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from torch.distributions import Normal
 from pathlib import Path
-from typing import Tuple, Optional, List
 import gymnasium as gym
 from tqdm import tqdm
 import hydra
 from omegaconf import DictConfig
 
-# Import your existing modules
 from sac import Actor, V_Critic, Double_Q_Critic, MLPTransitionVAE, dual
 from utils import build_net, evaluate_policy
 from ReplayBuffer import ReplayBuffer
@@ -20,20 +17,20 @@ from ReplayBuffer import ReplayBuffer
 class Discriminator(nn.Module):
     """
     AIRL-style discriminator with disentangled reward structure:
-    D(s,a,s') = g_θ(s,a) + γ*h_φ(s') - h_φ(s)
+    D(s,a,s') = g_θ(s,a) + gamma*h_φ(s') - h_φ(s)
     """
     def __init__(self, state_dim, action_dim, hidden_dim=256, hidden_layers=2, gamma=0.99):
         super(Discriminator, self).__init__()
         self.gamma = gamma
-        
+
         # Reward network g_θ(s,a)
         g_layers = [state_dim + action_dim] + [hidden_dim] * hidden_layers + [1]
         self.g_theta = build_net(g_layers, nn.ReLU, nn.Identity)
-        
+
         # Potential network h_φ(s)
         h_layers = [state_dim] + [hidden_dim] * hidden_layers + [1]
         self.h_phi = build_net(h_layers, nn.ReLU, nn.Identity)
-        
+
     def forward(self, state, action, next_state):
         """
         Compute discriminator value f(s,a,s')
@@ -42,17 +39,16 @@ class Discriminator(nn.Module):
         g_val = self.g_theta(sa)
         h_s = self.h_phi(state)
         h_s_next = self.h_phi(next_state)
-        
+
         # f(s,a,s') = g(s,a) + γ*h(s') - h(s)
         f_val = g_val + self.gamma * h_s_next - h_s
         return f_val
-    
+
     def get_reward(self, state, action, next_state):
         """
         Extract the reward signal for policy training
         """
         return self.forward(state, action, next_state)
-
 
 class VAEEnsemble(nn.Module):
     """
@@ -63,7 +59,7 @@ class VAEEnsemble(nn.Module):
         super(VAEEnsemble, self).__init__()
         self.num_models = num_models
         self.state_dim = state_dim
-        
+
         # Create ensemble of VAEs
         self.models = nn.ModuleList([
             MLPTransitionVAE(state_dim, action_dim, 
@@ -71,7 +67,7 @@ class VAEEnsemble(nn.Module):
                          latent_dim=latent_dim)
             for _ in range(num_models)
         ])
-        
+
     def forward(self, s, a, s_next, model_idx=None):
         """Forward pass through specific model or all models"""
         if model_idx is not None:
@@ -107,7 +103,7 @@ class VAEEnsemble(nn.Module):
         # Concatenate the samples from all chosen models
         combined_samples = torch.cat(all_samples, dim=1)
         return combined_samples
-    
+
     def get_uncertainty(self, s, a, num_samples=50):
         """
         Compute predictive variance as measure of epistemic uncertainty
@@ -125,27 +121,27 @@ class ExpertDataset:
     def __init__(self, path: str, device: str = 'cuda'):
         self.device = device
         self.load_demonstrations(path)
-        
+
     def load_demonstrations(self, path: str):
         """Load expert demonstrations from file"""
         # Assuming demonstrations are saved as numpy arrays
         data_path = Path(path)
-        
+
         if data_path.exists():
             self.states = torch.from_numpy(np.load(data_path / 's.npy')).to(self.device)
             self.actions = torch.from_numpy(np.load(data_path / 'a.npy')).to(self.device)
             self.next_states = torch.from_numpy(np.load(data_path / 's_next.npy')).to(self.device)
-            
+
             # Optional: rewards and dones if available
             if (data_path / 'r.npy').exists():
                 self.rewards = torch.from_numpy(np.load(data_path / 'r.npy')).to(self.device)
             if (data_path / 'dw.npy').exists():
                 self.dones = torch.from_numpy(np.load(data_path / 'dw.npy')).to(self.device)
-                
+
             self.size = len(self.states)
         else:
             raise FileNotFoundError(f"Expert dataset not found at {path}")
-    
+
     def sample(self, batch_size: int):
         """Sample a batch of expert transitions"""
         indices = torch.randint(0, self.size, (batch_size,))
@@ -163,7 +159,7 @@ class DR_AIL:
     def __init__(self, **kwargs):
         # Store all hyperparameters
         self.__dict__.update(kwargs)
-        
+
         # Initialize discriminator (reward function)
         self.discriminator = Discriminator(
             self.state_dim, self.action_dim,
@@ -174,7 +170,7 @@ class DR_AIL:
         self.disc_optimizer = torch.optim.Adam(
             self.discriminator.parameters(), lr=self.disc_lr
         )
-        
+
         # Initialize VAE ensemble for uncertainty-aware nominal model
         self.vae_ensemble = VAEEnsemble(
             self.state_dim, self.action_dim,
@@ -186,7 +182,7 @@ class DR_AIL:
         self.vae_optimizer = torch.optim.Adam(
             self.vae_ensemble.parameters(), lr=self.vae_lr
         )
-        
+
         # Initialize policy networks (actor)
         self.actor = Actor(
             self.state_dim, self.action_dim,
@@ -197,7 +193,7 @@ class DR_AIL:
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(), lr=self.actor_lr
         )
-        
+
         # Initialize value networks (V and Q critics)
         self.v_critic = V_Critic(
             self.state_dim,
@@ -208,7 +204,7 @@ class DR_AIL:
             self.v_critic.parameters(), lr=self.critic_lr
         )
         self.v_critic_target = copy.deepcopy(self.v_critic)
-        
+
         self.q_critic = Double_Q_Critic(
             self.state_dim, self.action_dim,
             hid_dim=self.net_width,  # <-- Use hid_dim (int)
@@ -217,7 +213,7 @@ class DR_AIL:
         self.q_critic_optimizer = torch.optim.Adam(
             self.q_critic.parameters(), lr=self.critic_lr
         )
-        
+
         # Initialize Lagrange multiplier network for β(s,a)
         self.beta_network = dual(
             self.state_dim, self.action_dim,
@@ -227,13 +223,13 @@ class DR_AIL:
         self.beta_optimizer = torch.optim.Adam(
             self.beta_network.parameters(), lr=self.beta_lr
         )
-        
+
         # Initialize replay buffer for policy samples
         self.replay_buffer = ReplayBuffer(
             self.state_dim, self.action_dim,
             max_size=int(1e6), device=self.device
         )
-        
+
         # Temperature parameter for SAC
         if self.adaptive_alpha:
             self.target_entropy = -self.action_dim
@@ -242,22 +238,22 @@ class DR_AIL:
             self.alpha = self.log_alpha.exp().item()
         else:
             self.alpha = self.initial_alpha
-    
+
     def pretrain_vae_ensemble(self, expert_dataset: ExpertDataset, 
                              num_epochs: int = 100, batch_size: int = 256):
         """
         Phase 1: Pre-train VAE ensemble on bootstrap samples of expert data
         """
         print("Phase 1: Pre-training VAE ensemble...")
-        
+
         for epoch in range(num_epochs):
             total_loss = 0
             num_batches = 10  # Number of batches per epoch
-            
+
             for _ in range(num_batches):
                 # Sample batch from expert data
                 s, a, s_next = expert_dataset.sample(batch_size)
-                
+
                 # Train each VAE on bootstrap sample
                 for i, vae in enumerate(self.vae_ensemble.models):
                     # Bootstrap sampling: sample with replacement
@@ -265,24 +261,24 @@ class DR_AIL:
                     s_boot = s[bootstrap_idx]
                     a_boot = a[bootstrap_idx]
                     s_next_boot = s_next[bootstrap_idx]
-                    
+
                     # VAE forward pass
                     s_next_recon, mu, logvar = vae(s_boot, a_boot, s_next_boot)
-                    
+
                     # VAE loss (reconstruction + KL divergence)
                     recon_loss = F.mse_loss(s_next_recon, s_next_boot)
                     kl_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
                     kl_loss = kl_loss / batch_size
-                    
+
                     vae_loss = recon_loss + self.vae_kl_weight * kl_loss
-                    
+
                     # Optimize this VAE
                     self.vae_optimizer.zero_grad()
                     vae_loss.backward()
                     self.vae_optimizer.step()
-                    
+
                     total_loss += vae_loss.item()
-            
+
             if epoch % 10 == 0:
                 avg_loss = total_loss / (num_batches * self.vae_ensemble.num_models)
                 print(f"Epoch {epoch}: VAE Loss = {avg_loss:.4f}")
@@ -417,7 +413,6 @@ class DR_AIL:
 
         # combines the Q-critic loss and the beta network loss
         # into a single objective for a joint, efficient update.
-
         # The beta network's goal is to maximize the dual objective (robust_v_next).
         # We frame this as minimizing its negative value.
         beta_loss = -(robust_v_next).mean()
@@ -624,7 +619,7 @@ class DR_AIL:
         self.beta_network.load_state_dict(
             torch.load(load_path / "beta_network.pth", map_location=self.device)
         )
-        
+
         print(f"Models loaded from {load_path}")
 
 
@@ -636,7 +631,7 @@ def main(cfg: DictConfig):
     # Set random seeds
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
-    
+
     # Create environment
     env = gym.make(cfg.env_name)
     state_dim = env.observation_space.shape[0]
@@ -644,10 +639,10 @@ def main(cfg: DictConfig):
     max_action = env.action_space.high.tolist()  # Action range [-max_action, max_action]
     # min_action = env.action_space.low.tolist() # Action range [-max_action, max_action]
     # max_e_steps = env._max_episode_steps
-    
+
     # Load expert dataset
     expert_dataset = ExpertDataset(cfg.expert_data_path, device=cfg.device)
-    
+
     # Initialize DR-AIL agent
     agent = DR_AIL(
         state_dim=state_dim,
@@ -660,7 +655,7 @@ def main(cfg: DictConfig):
         initial_alpha=cfg.initial_alpha,
         adaptive_alpha=cfg.adaptive_alpha,
         alpha_lr=cfg.alpha_lr,
-        
+
         # Network architecture
         net_width=cfg.net_width,
         net_layers=cfg.net_layers,
@@ -670,14 +665,14 @@ def main(cfg: DictConfig):
         vae_hidden_layers=cfg.vae_hidden_layers,
         latent_dim=cfg.latent_dim,
         num_vae_models=cfg.num_vae_models,
-        
+
         # Learning rates
         actor_lr=cfg.actor_lr,
         critic_lr=cfg.critic_lr,
         disc_lr=cfg.disc_lr,
         vae_lr=cfg.vae_lr,
         beta_lr=cfg.beta_lr,
-        
+
         # Training parameters
         start_timesteps=cfg.start_timesteps,
         kl_radius_scale=cfg.kl_radius_scale,
@@ -685,7 +680,7 @@ def main(cfg: DictConfig):
         use_grad_penalty=cfg.use_grad_penalty,
         seed=cfg.seed
     )
-    
+
     # Train agent
     agent.train(
         env=env,
@@ -694,10 +689,10 @@ def main(cfg: DictConfig):
         batch_size=cfg.batch_size,
         eval_freq=cfg.eval_freq
     )
-    
+
     # Save trained model
     agent.save(cfg.save_path)
-    
+
     env.close()
 
 
