@@ -633,11 +633,12 @@ class DR_AIL:
         save_path.mkdir(parents=True, exist_ok=True)
 
         torch.save(self.discriminator.state_dict(), save_path / "discriminator.pth")
-        torch.save(self.vae_ensemble.state_dict(), save_path / "vae_ensemble.pth")
+        if self.robust:
+            torch.save(self.vae_ensemble.state_dict(), save_path / "vae_ensemble.pth")
+            torch.save(self.beta_network.state_dict(), save_path / "beta_network.pth")
         torch.save(self.actor.state_dict(), save_path / "actor.pth")
         torch.save(self.q_critic.state_dict(), save_path / "q_critic.pth")
         torch.save(self.v_critic.state_dict(), save_path / "v_critic.pth")
-        torch.save(self.beta_network.state_dict(), save_path / "beta_network.pth")
 
         print(f"Models saved to {save_path}")
 
