@@ -16,32 +16,31 @@ from ReplayBuffer import ReplayBuffer
 
 class Discriminator(nn.Module):
     """
-    AIRL-style discriminator with disentangled reward structure:
-    D(s,a,s') = g_θ(s,a) + gamma*h_φ(s') - h_φ(s)
+    AIRL-style score with disentangled structure:
+    f(s,a,s') = g_theta(s) + gamma * h_phi(s') - h_phi(s)
+    NOTE: g_theta(s) is state-only for transferability.
     """
     def __init__(self, state_dim, action_dim, hidden_dim=256, hidden_layers=2, gamma=0.99):
         super(Discriminator, self).__init__()
         self.gamma = gamma
 
-        # Reward network g_θ(s,a)
-        g_layers = [state_dim + action_dim] + [hidden_dim] * hidden_layers + [1]
+        # Reward head g_theta(s)  <-- state-only (no action!)
+        g_layers = [state_dim] + [hidden_dim] * hidden_layers + [1]
         self.g_theta = build_net(g_layers, nn.ReLU, nn.Identity)
 
-        # Potential network h_φ(s)
+        # Potential head h_phi(s)
         h_layers = [state_dim] + [hidden_dim] * hidden_layers + [1]
         self.h_phi = build_net(h_layers, nn.ReLU, nn.Identity)
 
     def forward(self, state, action, next_state):
         """
-        Compute discriminator value f(s,a,s')
+        Return AIRL score f(s,a,s') (NOT the reward):
+        f = g(s) + gamma*h(s') - h(s)
         """
-        sa = torch.cat([state, action], dim=-1)
-        g_val = self.g_theta(sa)
-        h_s = self.h_phi(state)
-        h_s_next = self.h_phi(next_state)
-
-        # f(s,a,s') = g(s,a) + γ*h(s') - h(s)
-        f_val = g_val + self.gamma * h_s_next - h_s
+        g_val   = self.g_theta(state)
+        h_s     = self.h_phi(state)
+        h_s_next= self.h_phi(next_state)
+        f_val   = g_val + self.gamma * h_s_next - h_s
         return f_val
 
     def get_reward(self, state, action, next_state):
@@ -288,6 +287,26 @@ class DR_AIL:
                 avg_loss = total_loss / (num_batches * self.vae_ensemble.num_models)
                 print(f"Epoch {epoch}: VAE Loss = {avg_loss:.4f}")
 
+    def z_logits(self, states, actions, next_states):
+        """
+        z = f - log pi(a|s), where f comes from the discriminator and log pi from the actor.
+        """
+        with torch.no_grad():
+            logp = self.actor.log_prob(states, actions)
+        f = self.discriminator(states, actions, next_states)
+        return f - logp  # this equals r = log D - log(1-D)
+
+    def set_delta_E(self, m):
+        """
+        Expert-side KL radius: delta_E = max{ log(1/eta), log(1/rho)/m }.
+        Provide self.demo_eta and self.demo_rho via config; defaults below.
+        """
+        eta = getattr(self, "demo_eta", 0.10)   # target contamination (e.g., 10%)
+        rho = getattr(self, "demo_rho", 0.05)   # failure prob for coverage (e.g., 5%)
+        delta_E = max(np.log(1.0/eta), np.log(1.0/rho) / float(m))
+        self.delta_E = float(delta_E)
+        return self.delta_E
+
     def compute_kl_radius(self, states, actions):
         """
         Compute state-action dependent KL radius based on ensemble uncertainty
@@ -298,167 +317,194 @@ class DR_AIL:
             delta_kl = self.kl_radius_scale * uncertainty
             return delta_kl
 
-    def update_discriminator(self, expert_batch, policy_batch):
+    def update_discriminator(self, expert_batch, policy_batch, K_beta=2):
         """
-        Update discriminator (reward function) using adversarial loss
+        Expert-side KL-DRO for positives, standard BCE for negatives.
+        L_D = (- L_E^DRO) + E[ell_pi], where
+        L_E^DRO = - beta * delta_E - beta * logmeanexp(-ell_E / beta)  (stable)
         """
         s_exp, a_exp, s_next_exp = expert_batch
         s_pol, a_pol, s_next_pol = policy_batch
 
-        # Compute discriminator outputs
-        f_expert = self.discriminator(s_exp, a_exp, s_next_exp)
-        f_policy = self.discriminator(s_pol, a_pol, s_next_pol)
+        # z = f - log pi(a|s)
+        z_E = self.z_logits(s_exp, a_exp, s_next_exp)   # expert
+        z_P = self.z_logits(s_pol, a_pol, s_next_pol)   # policy
 
-        # Adversarial loss (binary cross entropy)
-        expert_loss = -torch.log(torch.sigmoid(f_expert) + 1e-8).mean()
-        policy_loss = -torch.log(1 - torch.sigmoid(f_policy) + 1e-8).mean()
+        # Per-sample BCE losses
+        with torch.no_grad():
+            ell_E = F.softplus(-z_E)    # = -log sigmoid(z_E)
 
-        disc_loss = expert_loss + policy_loss
+        ell_P = F.softplus( z_P)    # = -log(1 - sigmoid(z_P))
+        ell_pi_mean = ell_P.mean()
 
-        # Add gradient penalty for stability (optional)
+        # Set / hold delta_E (fixed offline for demos)
+        m = s_exp.shape[0]
+        if not hasattr(self, "delta_E"):
+            self.set_delta_E(m)
+        delta_E = torch.as_tensor(self.delta_E, device=z_E.device, dtype=z_E.dtype)
+
+        # Dual ascent on scalar beta_E (batch-wise) to maximize L_E^DRO
+        beta_raw = torch.zeros((), device=z_E.device, requires_grad=True)
+        beta_lr  = getattr(self, "beta_lr_dro", 1e-2)
+
+        for _ in range(K_beta):
+            beta = F.softplus(beta_raw) + 1e-8
+            u = -ell_E / beta
+            u_max = u.max()
+            # log(mean(exp(u))) with stabilization
+            log_mean_exp = u_max + torch.log(torch.mean(torch.exp(u - u_max)) + 1e-12)
+            L_E_DRO = - beta * delta_E - beta * log_mean_exp
+            # gradient ASCENT on beta_raw
+            (L_E_DRO).backward(retain_graph=True)
+            with torch.no_grad():
+                beta_raw += beta_lr * beta_raw.grad
+                beta_raw.grad = None
+
+        # Recompute final DRO term (no grad for beta now)
+        beta = (F.softplus(beta_raw) + 1e-8).detach()
+        u = -ell_E / beta
+        u_max = u.max()
+        log_mean_exp = u_max + torch.log(torch.mean(torch.exp(u - u_max)) + 1e-12)
+        L_E_DRO = - beta * delta_E - beta * log_mean_exp
+
+        # Final discriminator objective
+        L_D = (-L_E_DRO) + ell_pi_mean
+
+        # Optional: gradient penalty (kept after the DRO objective)
         if self.use_grad_penalty:
-            disc_loss += self.compute_gradient_penalty(expert_batch, policy_batch)
+            L_D = L_D + self.compute_gradient_penalty((s_exp, a_exp, s_next_exp),
+                                                      (s_pol, a_pol, s_next_pol))
 
-        # Update discriminator
-        self.disc_optimizer.zero_grad()
-        disc_loss.backward()
+        self.disc_optimizer.zero_grad(set_to_none=True)
+        L_D.backward()
         torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 1.0)
         self.disc_optimizer.step()
 
-        return disc_loss.item()
+        # Logging helpers
+        worst_weight_cap = float(np.exp(self.delta_E) / m)
+        return {
+            "disc_loss": L_D.item(),
+            "ell_pi_mean": ell_pi_mean.item(),
+            "delta_E": float(self.delta_E),
+            "beta_E": float(beta.item()),
+            "worst_weight_cap": worst_weight_cap,
+        }
 
     def compute_gradient_penalty(self, expert_batch, policy_batch, lambda_gp=10):
         """
-        Compute gradient penalty for discriminator (WGAN-GP style)
+        WGAN-GP style penalty adapted for DR-AIRL:
+        - penalize the gradient norm of f(s, a, s') w.r.t. (s, s') only
+        because f no longer depends on action when g is state-only.
+        - keep the actor out of this path (no log pi here).
         """
         s_exp, a_exp, s_next_exp = expert_batch
         s_pol, a_pol, s_next_pol = policy_batch
 
         batch_size = s_exp.size(0)
-        alpha = torch.rand(batch_size, 1, device=self.device)
+        device = s_exp.device
 
-        # Interpolate between expert and policy samples
-        s_interp = alpha * s_exp + (1 - alpha) * s_pol
-        a_interp = alpha * a_exp + (1 - alpha) * a_pol
-        s_next_interp = alpha * s_next_exp + (1 - alpha) * s_next_pol
+        # Interpolate ONLY states and next states (actions are irrelevant for f)
+        alpha = torch.rand(batch_size, 1, device=device)
+        s_interp     = (alpha * s_exp     + (1 - alpha) * s_pol    ).requires_grad_(True)
+        s_next_interp= (alpha * s_next_exp+ (1 - alpha) * s_next_pol).requires_grad_(True)
 
-        s_interp.requires_grad_(True)
-        a_interp.requires_grad_(True)
-        s_next_interp.requires_grad_(True)
+        # Pass a dummy action tensor (zeros) with correct shape; f ignores it
+        a_dummy = torch.zeros_like(a_exp)
 
-        # Compute discriminator output
-        f_interp = self.discriminator(s_interp, a_interp, s_next_interp)
+        # Compute f(s,a,s') on the interpolates
+        f_interp = self.discriminator(s_interp, a_dummy, s_next_interp)  # shape [B,1] or [B]
 
-        # Compute gradients
-        gradients = torch.autograd.grad(
-            outputs=f_interp,
-            inputs=[s_interp, a_interp, s_next_interp],
-            grad_outputs=torch.ones_like(f_interp),
+        # Make a scalar (sum over batch) for autograd
+        f_sum = f_interp.sum()
+
+        # Gradients w.r.t. s and s'
+        grads = torch.autograd.grad(
+            outputs=f_sum,
+            inputs=[s_interp, s_next_interp],
             create_graph=True,
-            retain_graph=True
+            retain_graph=True,
+            only_inputs=True,
         )
 
-        grad_norm = 0
-        for grad in gradients:
-            grad_norm += grad.view(batch_size, -1).norm(2, dim=1)
+        # Concatenate and compute L2 norm per sample
+        grad_s, grad_sp = grads
+        grad_cat = torch.cat([grad_s.view(batch_size, -1), grad_sp.view(batch_size, -1)], dim=1)
+        grad_norm = grad_cat.norm(2, dim=1)
 
-        gradient_penalty = lambda_gp * ((grad_norm - 1) ** 2).mean()
-        return gradient_penalty
+        gp = lambda_gp * ((grad_norm - 1.0) ** 2).mean()
+        return gp
 
     def update_critic(self, batch):
         """
-        Update Q-function using the standard Bellman operator (for AIRL baseline).
+        Standard Bellman using AIRL reward r := z = f - log pi.
         """
         states, actions, next_states = batch
 
-        # Get reward from discriminator
         with torch.no_grad():
-            rewards = self.discriminator.get_reward(states, actions, next_states)
-
-        # Compute target V-value using target networks
-        with torch.no_grad():
+            rewards = self.z_logits(states, actions, next_states)
             v_next = self.v_critic_target(next_states)
             q_targets = rewards + self.gamma * v_next
 
-        # Update Q-networks
         q1, q2 = self.q_critic(states, actions)
         q_loss = F.mse_loss(q1, q_targets) + F.mse_loss(q2, q_targets)
 
-        # Optimize the Q-critics
-        self.q_critic_optimizer.zero_grad()
+        self.q_critic_optimizer.zero_grad(set_to_none=True)
         q_loss.backward()
         self.q_critic_optimizer.step()
-
         return q_loss.item()
 
     def update_robust_critic(self, batch):
         """
-        Update Q-function using robust Bellman operator
+        Robust Bellman backup with KL-DRO (entropic risk, stabilized).
         """
         states, actions, next_states = batch
 
-        # Get reward from discriminator
+        # Reward r := z
         with torch.no_grad():
-            rewards = self.discriminator.get_reward(states, actions, next_states)
+            rewards = self.z_logits(states, actions, next_states)
 
-        # Compute target V-value
+        # Soft value target from actor & Q (SAC-style)
         with torch.no_grad():
             next_actions, next_log_probs = self.actor(next_states, False, True)
             q1_next, q2_next = self.q_critic(next_states, next_actions)
             q_next = torch.min(q1_next, q2_next)
-            v_target = q_next - self.alpha * next_log_probs
+            v_target = q_next - self.alpha * next_log_probs  # shape [B,1] or [B]
 
-        # Compute KL radius
-        delta_kl = self.compute_kl_radius(states, actions)
+        # KL radius per (s,a)
+        delta_kl = self.compute_kl_radius(states, actions)  # shape [B,1]
+        beta = F.softplus(self.beta_network(states, actions)) + 1e-8  # shape [B,1]
 
-        # Compute β(s,a) using Lagrange multiplier network
-        beta = F.softplus(self.beta_network(states, actions))
-
-        # Sample next states from VAE ensemble
+        # Sample next states from the ensemble
         num_samples = 20
-        s_next_samples = self.vae_ensemble.sample_next_states(states, actions, num_samples)
+        s_next_samples = self.vae_ensemble.sample_next_states(states, actions, num_samples)  # [B,S,D]
 
-        # Compute robust expectation using dual formulation
-        v_samples = []
-        for i in range(num_samples):
-            s_next_i = s_next_samples[:, i, :]
-            with torch.no_grad():
-                v_i = self.v_critic_target(s_next_i)
-            v_samples.append(v_i)
+        # Compute entropic-risk expectation: -β δ - β[ u_max + log E exp(u-u_max) ], u = -V/β
+        with torch.no_grad():
+            v_list = []
+            for i in range(num_samples):
+                v_i = self.v_critic_target(s_next_samples[:, i, :])  # [B,1] or [B]
+                v_list.append(v_i.squeeze(-1))
+            V = torch.stack(v_list, dim=1)  # [B,S]
 
-        v_samples = torch.stack(v_samples, dim=1)  # (batch_size, num_samples, 1)
+            beta_b = beta.squeeze(-1)  # [B]
+            u = - V / (beta_b.unsqueeze(1))
+            u_max, _ = u.max(dim=1, keepdim=True)           # [B,1]
+            log_mean_exp = u_max.squeeze(1) + torch.log(torch.mean(torch.exp(u - u_max), dim=1) + 1e-12)  # [B]
+            robust_v_next = - beta_b * delta_kl.squeeze(-1) - beta_b * log_mean_exp  # [B]
 
-        # Robust expectation: -β*δ_KL - β*log(E[exp(-V/β)])
-        exp_term = torch.exp(-v_samples / (beta.unsqueeze(1) + 1e-8))
-        log_exp_mean = torch.log(exp_term.mean(dim=1) + 1e-8)
-        robust_v_next = -beta * delta_kl - beta * log_exp_mean
+            q_targets = rewards.squeeze(-1) + self.gamma * robust_v_next  # [B]
 
-        # Compute Q-targets
-        q_targets = rewards + self.gamma * robust_v_next
+        q1, q2 = self.q_critic(states, actions)           # [B,1]
+        q1 = q1.squeeze(-1); q2 = q2.squeeze(-1)
 
-        # Update Q-networks
-        q1, q2 = self.q_critic(states, actions)
-        q1_loss = F.mse_loss(q1, q_targets)
-        q2_loss = F.mse_loss(q2, q_targets)
-        q_loss = q1_loss + q2_loss
+        q_loss = F.mse_loss(q1, q_targets) + F.mse_loss(q2, q_targets)
+        beta_loss = -(robust_v_next).mean()               # dual ascent (maximize robust term)
 
-        # combines the Q-critic loss and the beta network loss
-        # into a single objective for a joint, efficient update.
-        # The beta network's goal is to maximize the dual objective (robust_v_next).
-        # We frame this as minimizing its negative value.
-        beta_loss = -(robust_v_next).mean()
-
-        # Combine the losses
         total_critic_loss = q_loss + beta_loss
 
-        # Zero gradients for both optimizers
-        self.q_critic_optimizer.zero_grad()
-        self.beta_optimizer.zero_grad()
-
-        # Perform a single backward pass on the combined loss
+        self.q_critic_optimizer.zero_grad(set_to_none=True)
+        self.beta_optimizer.zero_grad(set_to_none=True)
         total_critic_loss.backward()
-
-        # Step both optimizers
         self.q_critic_optimizer.step()
         self.beta_optimizer.step()
 
@@ -526,8 +572,8 @@ class DR_AIL:
         return action.cpu().numpy().flatten()
 
     def train(self, env, expert_dataset: ExpertDataset, 
-              num_iterations: int = 100000, batch_size: int = 256,
-              eval_freq: int = 1000):
+                num_iterations: int = 100000, batch_size: int = 256,
+                eval_freq: int = 1000):
         """
         Main training loop for DR-AIL
         """
@@ -571,54 +617,54 @@ class DR_AIL:
                 episode_timesteps = 0
                 episode_num += 1
 
-            # Start training after collecting enough samples
+            # --- Start training after collecting enough samples
             if t >= self.start_timesteps:
-                # Sample batches
+                # 1) Expert batch
                 expert_batch = expert_dataset.sample(batch_size)
 
-                # Sample policy batch from replay buffer
+                # 2) Policy batch from replay buffer
                 rb_batch = self.replay_buffer.sample(batch_size)
                 policy_states = rb_batch[0]
                 policy_actions = rb_batch[1]
-
-                # Generate next states using VAE ensemble mean
+                # Next states:
                 with torch.no_grad():
                     if self.robust:
-                        # For DR-AIL, sample from the learned dynamics model
+                        # Use learned dynamics (ensemble) for DR-AIRL
                         policy_next_states = self.vae_ensemble.sample_next_states(
                             policy_states, policy_actions, num_samples=1
                         ).squeeze(1)
                     else:
-                        # For standard AIRL, just use the actual next states from the buffer
-                        rb_batch = self.replay_buffer.sample(batch_size)
-                        policy_states, policy_actions = rb_batch[0], rb_batch[1]
-                        policy_next_states = rb_batch[3] # Get s_next from buffer
-
+                        policy_next_states = rb_batch[3]  # from buffer
 
                 policy_batch = (policy_states, policy_actions, policy_next_states)
 
-                # Update discriminator
-                disc_loss = self.update_discriminator(expert_batch, policy_batch)
+                # ---- Discriminator (returns dict)
+                disc_stats = self.update_discriminator(expert_batch, policy_batch)
+                disc_loss = float(disc_stats["disc_loss"])
 
-                # Update robust critic
-                critic_batch = expert_batch
-                # Conditionally call the appropriate critic update
+                # ---- Critic (use POLICY transitions, not expert)
+                critic_batch = policy_batch
                 if self.robust:
                     q_loss = self.update_robust_critic(critic_batch)
                 else:
                     q_loss = self.update_critic(critic_batch)
 
-                # Update actor
-                actor_states = expert_batch[0]
+                # ---- Actor (use POLICY states)
+                actor_states = policy_states
                 actor_loss = self.update_actor(actor_states)
 
-                # Update value network
+                # ---- Value network (use POLICY states)
                 v_loss = self.update_value_network(actor_states)
 
-                # Logging
+                # ---- Logging
                 if t % 100 == 0:
-                    print(f"Step {t}: D_loss={disc_loss:.4f}, Q_loss={q_loss:.4f}, "
-                          f"A_loss={actor_loss:.4f}, V_loss={v_loss:.4f}")
+                    print(
+                        f"Step {t}: D_loss={disc_loss:.4f}, "
+                        f"Q_loss={q_loss:.4f}, A_loss={actor_loss:.4f}, V_loss={v_loss:.4f} | "
+                        f"DRO(delta_E={disc_stats['delta_E']:.4f}, "
+                        f"beta_E={disc_stats['beta_E']:.4f}, "
+                        f"cap={disc_stats['worst_weight_cap']:.6f})"
+                    )
 
             # Evaluation
             if t % eval_freq == 0:

@@ -63,6 +63,41 @@ class Actor(nn.Module):
 
         return a * self.max_action, logp_pi_a
 
+    def log_prob(self, states, actions_env):
+        """
+        Compute log π(a|s) for actions in ENV scale ([-max_action, max_action]).
+        Steps:
+            1) a_tanh = a_env / max_action  (clip to (-1,1))
+            2) u = atanh(a_tanh)
+            3) log π(a|s) = log N(u; μ, σ) - sum log |det d tanh(u)/du|
+                          = log N(u; μ, σ) - sum [ 2*(log 2 - u - softplus(-2u)) ]
+        Returns shape [B,1], consistent with your forward().
+        """
+        eps = 1e-6
+
+        # 1) Unscale to tanh range [-1, 1]
+        # self.max_action is a registered buffer (shape [act_dim] or scalar)
+        a_tanh = (actions_env / self.max_action).clamp(-1.0 + eps, 1.0 - eps)
+
+        # 2) Pre-tanh variable via atanh
+        # atanh(x) = 0.5 * (log(1+x) - log(1-x))
+        u = 0.5 * (torch.log1p(a_tanh + eps) - torch.log1p(-a_tanh + eps))
+
+        # 3) Gaussian in pre-tanh space
+        net_out = self.a_net(states)
+        mu = self.mu_layer(net_out)
+        log_std = self.log_std_layer(net_out)
+        log_std = torch.clamp(log_std, min=self.LOG_STD_MIN, max=self.LOG_STD_MAX)
+        std = torch.exp(log_std)
+
+        dist = Normal(mu, std)
+        logp_u = dist.log_prob(u).sum(dim=1, keepdim=True)
+
+        # Tanh change-of-variables correction (stable form)
+        tanh_correction = (2 * (np.log(2) - u - F.softplus(-2 * u))).sum(dim=1, keepdim=True)
+
+        return logp_u - tanh_correction
+
 class V_Critic(nn.Module):
     def __init__(self, state_dim, hid_dim, hid_layers):
         super(V_Critic, self).__init__()
