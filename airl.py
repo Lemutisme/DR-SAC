@@ -24,7 +24,7 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.gamma = gamma
 
-        # Reward head g_theta(s)  <-- state-only (no action!)
+        # Reward head g_theta(s)
         g_layers = [state_dim] + [hidden_dim] * hidden_layers + [1]
         self.g_theta = build_net(g_layers, nn.ReLU, nn.Identity)
 
@@ -54,7 +54,7 @@ class VAEEnsemble(nn.Module):
     Ensemble of VAEs for uncertainty-aware nominal model estimation
     """
     def __init__(self, state_dim, action_dim, num_models=5, hidden_dim=256, 
-                 hidden_layers=2, latent_dim=10):
+                    hidden_layers=2, latent_dim=10):
         super(VAEEnsemble, self).__init__()
         self.num_models = num_models
         self.state_dim = state_dim
@@ -62,8 +62,8 @@ class VAEEnsemble(nn.Module):
         # Create ensemble of VAEs
         self.models = nn.ModuleList([
             MLPTransitionVAE(state_dim, action_dim, 
-                         hidden_dim=hidden_dim, hidden_layer=hidden_layers, 
-                         latent_dim=latent_dim)
+                            hidden_dim=hidden_dim, hidden_layer=hidden_layers, 
+                            latent_dim=latent_dim)
             for _ in range(num_models)
         ])
 
@@ -94,7 +94,7 @@ class VAEEnsemble(nn.Module):
                 # Generate 'count' samples from the i-th model
                 samples = self.models[i].sample(s, a, count)
                 all_samples.append(samples)
-        
+
         # Handle the edge case where num_samples is 0
         if not all_samples:
             return torch.empty(s.size(0), 0, self.state_dim, device=s.device)
@@ -244,7 +244,7 @@ class DR_AIL:
             self.alpha = self.initial_alpha
 
     def pretrain_vae_ensemble(self, expert_dataset: ExpertDataset, 
-                             num_epochs: int = 100, batch_size: int = 256):
+                                num_epochs: int = 100, batch_size: int = 256):
         """
         Phase 1: Pre-train VAE ensemble on bootstrap samples of expert data
         """
