@@ -317,7 +317,7 @@ class DR_AIL:
             delta_kl = self.kl_radius_scale * uncertainty
             return delta_kl
 
-    def update_discriminator(self, expert_batch, policy_batch, K_beta=2):
+    def update_discriminator_DRO(self, expert_batch, policy_batch, K_beta=2):
         """
         Expert-side KL-DRO for positives, standard BCE for negatives.
         L_D = (- L_E^DRO) + E[ell_pi], where
@@ -389,6 +389,78 @@ class DR_AIL:
             "beta_E": float(beta.item()),
             "worst_weight_cap": worst_weight_cap,
         }
+
+    def update_discriminator_DFO(self, expert_batch, policy_batch, K_beta=2):
+        s_exp, a_exp, s_next_exp = expert_batch
+        s_pol, a_pol, s_next_pol = policy_batch
+
+        # z = f - log pi(a|s)
+        z_E = self.z_logits(s_exp, a_exp, s_next_exp)   # expert
+        z_P = self.z_logits(s_pol, a_pol, s_next_pol)   # policy
+
+        # === 1) Positive / expert loss (NO detach here; keep grad to discriminator)
+        ell_E = F.softplus(-z_E)        # = -log sigmoid(z_E), shape [B,1] or [B]
+
+        # === 2) Negative / policy loss (standard BCE-)
+        ell_P = F.softplus(z_P)         # = -log(1 - sigmoid(z_P))
+        ell_pi_mean = ell_P.mean()
+
+        # === 3) Set delta_E
+        m = s_exp.shape[0]
+        if not hasattr(self, "delta_E"):
+            self.set_delta_E(m)
+        delta_E = torch.as_tensor(self.delta_E, device=z_E.device, dtype=z_E.dtype)
+
+        # === 4) Dual ascent on scalar beta_E to APPROXIMATE sup_beta  (use ell_E.detach() here)
+        beta_raw = torch.zeros((), device=z_E.device, requires_grad=True)
+        beta_lr  = getattr(self, "beta_lr_dro", 1e-2)
+        for _ in range(K_beta):
+            beta = F.softplus(beta_raw) + 1e-8
+            u = -ell_E.detach() / beta                 # <-- detach to avoid grad into discriminator in the inner loop
+            u_max = u.max()
+            log_mean_exp = u_max + torch.log(torch.mean(torch.exp(u - u_max)) + 1e-12)
+            L_E_beta = - beta * delta_E - beta * log_mean_exp  # concave in beta
+
+            # ascent in beta only
+            (L_E_beta).backward()
+            with torch.no_grad():
+                beta_raw += beta_lr * beta_raw.grad
+                beta_raw.grad = None
+
+        # === 5) Recompute DFO risk with FINAL beta (beta is constant; grad flows to discriminator via ell_E)
+        beta = (F.softplus(beta_raw) + 1e-8).detach()      # <-- treat beta as constant for outer step
+        u = -ell_E / beta
+        u_max = u.max()
+        log_mean_exp = u_max + torch.log(torch.mean(torch.exp(u - u_max)) + 1e-12)
+        L_E_DFO = - beta * delta_E - beta * log_mean_exp    # this is the DFO risk (sup_beta approximated)
+
+        # (Optional) monitor batch weights & KL to target radius
+        with torch.no_grad():
+            w = torch.softmax(-ell_E.squeeze(-1) / beta, dim=0)     # shape [B]
+            kl_wu = (w * (torch.log(w * m + 1e-12))).sum()
+            worst_weight_cap = float(np.exp(self.delta_E) / m)
+
+        # === 6) Final discriminator objective: MINIMIZE positive DFO + negative BCE (+ GP)
+        L_D = L_E_DFO + ell_pi_mean
+
+        if self.use_grad_penalty:
+            L_D = L_D + self.compute_gradient_penalty((s_exp, a_exp, s_next_exp),
+                                                    (s_pol, a_pol, s_next_pol))
+
+        self.disc_optimizer.zero_grad(set_to_none=True)
+        L_D.backward()
+        torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 1.0)
+        self.disc_optimizer.step()
+
+        return {
+            "disc_loss": float(L_D.item()),
+            "ell_pi_mean": float(ell_pi_mean.item()),
+            "delta_E": float(self.delta_E),
+            "beta_E": float(beta.item()),
+            "kl_wu": float(kl_wu.item()),
+            "worst_weight_cap": worst_weight_cap,
+        }
+
 
     def compute_gradient_penalty(self, expert_batch, policy_batch, lambda_gp=10):
         """
@@ -639,7 +711,7 @@ class DR_AIL:
                 policy_batch = (policy_states, policy_actions, policy_next_states)
 
                 # ---- Discriminator (returns dict)
-                disc_stats = self.update_discriminator(expert_batch, policy_batch)
+                disc_stats = self.update_discriminator_DFO(expert_batch, policy_batch)
                 disc_loss = float(disc_stats["disc_loss"])
 
                 # ---- Critic (use POLICY transitions, not expert)
