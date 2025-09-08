@@ -317,6 +317,33 @@ class DR_AIL:
             delta_kl = self.kl_radius_scale * uncertainty
             return delta_kl
 
+    def update_discriminator_BCE(self, expert_batch, policy_batch):
+        # expert_batch: (sE, aE, sE2), policy_batch: (sP, aP, sP2)
+        sE, aE, sE2 = expert_batch[:3]
+        sP, aP, sP2 = policy_batch[:3]
+
+        self.disc_optimizer.zero_grad(set_to_none=True) 
+
+        # z = f - log π, numerically stable BCE: softplus
+        z_E  = self.z_logits(sE, aE, sE2)           # expert logits
+        z_pi = self.z_logits(sP, aP, sP2)           # policy logits
+
+        # BCE positive sample: -log σ(z_E) = softplus(-z_E)
+        # BCE negative sample: -log (1-σ(z_pi)) = softplus(z_pi)
+        ell_E  = torch.nn.functional.softplus(-z_E).mean()
+        ell_pi = torch.nn.functional.softplus( z_pi).mean()
+        d_loss = ell_E + ell_pi
+
+        if self.use_grad_penalty:
+            d_loss = d_loss + self.compute_gradient_penalty((sE, aE, sE2),
+                                                      (sP, aP, sP2))
+
+        d_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.discriminator.parameters(), 10.0)
+        self.disc_optimizer.step()
+
+        return {"disc_loss": float(d_loss.detach())}
+
     def update_discriminator_DRO(self, expert_batch, policy_batch, K_beta=2):
         """
         Expert-side KL-DRO for positives, standard BCE for negatives.
@@ -711,7 +738,10 @@ class DR_AIL:
                 policy_batch = (policy_states, policy_actions, policy_next_states)
 
                 # ---- Discriminator (returns dict)
-                disc_stats = self.update_discriminator_DFO(expert_batch, policy_batch)
+                if self.robust:
+                    disc_stats = self.update_discriminator_DFO(expert_batch, policy_batch)
+                else:
+                    disc_stats = self.update_discriminator_BCE(expert_batch, policy_batch)
                 disc_loss = float(disc_stats["disc_loss"])
 
                 # ---- Critic (use POLICY transitions, not expert)
@@ -730,13 +760,20 @@ class DR_AIL:
 
                 # ---- Logging
                 if t % 100 == 0:
-                    print(
-                        f"Step {t}: D_loss={disc_loss:.4f}, "
-                        f"Q_loss={q_loss:.4f}, A_loss={actor_loss:.4f}, V_loss={v_loss:.4f} | "
-                        f"DRO(delta_E={disc_stats['delta_E']:.4f}, "
-                        f"beta_E={disc_stats['beta_E']:.4f}, "
-                        f"cap={disc_stats['worst_weight_cap']:.6f})"
-                    )
+                    if self.robust:
+                        print(
+                            f"Step {t}: D_loss={disc_loss:.4f}, "
+                            f"Q_loss={q_loss:.4f}, A_loss={actor_loss:.4f}, V_loss={v_loss:.4f} | "
+                            f"DRO(delta_E={disc_stats['delta_E']:.4f}, "
+                            f"beta_E={disc_stats['beta_E']:.4f}, "
+                            f"cap={disc_stats['worst_weight_cap']:.6f})"
+                        )
+                    else:
+                        print(
+                            f"Step {t}: D_loss={disc_loss:.4f}, "
+                            f"Q_loss={q_loss:.4f}, A_loss={actor_loss:.4f}, V_loss={v_loss:.4f}"
+                        )
+                    
 
             # Evaluation
             if t % eval_freq == 0:
