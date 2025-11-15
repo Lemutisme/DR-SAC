@@ -70,14 +70,16 @@ def main(cfg: DictConfig):
         "ContinuousCartPole-v0",
         'LunarLanderContinuous-v3',
         'HalfCheetah-v5',
-        "Reacher-v5"
+        "Reacher-v5",
+        "Ant-v5"
     ]
     BrifEnvName = [
         'PV1',
         "CPV0",
         'LLdV3',
         'HCV5',
-        'RV5'
+        'RV5',
+        'ANTV5'
     ]
 
     # Create a config object from Hydra for compatibility with rest of code
@@ -214,16 +216,20 @@ def main(cfg: DictConfig):
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
                 # If robust policy, train VAE first
                 if not opt.robust:
-                    opt.vae_steps = 0
-                while total_steps < opt.vae_steps:
-                    vae_loss = agent.vae_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)      
+                    opt.gen_steps = 0
+                while total_steps < opt.gen_steps:
+                    if opt.gen_type == 'vae':
+                        gen_loss = agent.vae_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)      
+                    elif opt.gen_type == 'diffusion':
+                        gen_loss = agent.diffusion_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)
                     total_steps += opt.eval_interval
                     pbar.update(opt.eval_interval)
                     
                     if total_steps % opt.eval_interval == 0:
                         log.info(f"EnvName: {BrifEnvName[opt.env_index]}, "
                                  f"Steps: {int(total_steps/1000)}k, "
-                                 f"VAE Loss: {vae_loss}")
+                                 f"Generative Model: {opt.gen_type}, "
+                                 f"Generative Model Loss: {gen_loss}")
                 
                 # Policy training                         
                 while total_steps < opt.max_train_steps:

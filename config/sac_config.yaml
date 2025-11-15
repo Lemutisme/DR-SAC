@@ -41,8 +41,8 @@ epsilon: 0.1
 seed: 42
 # Training steps
 max_train_steps: 200000
-# VAE training steps
-vae_steps: 0
+# Generative Model training steps
+gen_steps: 0
 # Save every xxx steps
 save_interval: 10000
 # Evaluate every xxx steps
@@ -97,6 +97,8 @@ delta: 0.1
 robust_optimizer: functional # functional, separate
 # Probability of taking random actions, used in some test cases
 random_action_prob: 0.0
+# Type of generative model
+gen_type: vae # vae, diffusion
 
 # ------------  Hydra output directory  ------------
 hydra:

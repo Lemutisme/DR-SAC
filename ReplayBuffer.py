@@ -4,14 +4,14 @@ from pathlib import Path
 from utils import Reward_adapter
 
 class ReplayBuffer(object):
-    def __init__(self, state_dim, action_dim, max_size, device, EnvIndex):
+    def __init__(self, state_dim, action_dim, max_size, device, EnvIndex=None):
         self.max_size = max_size
         self.device = device
         self.ptr = 0
         self.size = 0
         
         # We normalize state for better Halfcheetah VAE training
-        # Action is not normalized since it ranges from [-1,1].
+        # Actions are NOT normalized since it ranges from [-1,1].
         self.s = torch.zeros((max_size, state_dim), dtype=torch.float, device=self.device)
         self.s_norm = torch.zeros((max_size, state_dim), dtype=torch.float, device=self.device)
         self.a = torch.zeros((max_size, action_dim), dtype=torch.float, device=self.device)

@@ -194,8 +194,137 @@ class MLPTransitionVAE(nn.Module):
         s_expanded = s.unsqueeze(1).expand(-1, num_samples, -1)
         a_expanded = a.unsqueeze(1).expand(-1, num_samples, -1)
         s_next_samples = self.decode(s_expanded, a_expanded, z)
-        s_next_samples = self.wrapper(s_next_samples)
         return s_next_samples   
+
+
+class TimeMLP(nn.Module):
+    """Minimal timestep embedding: scalar t -> vector embedding."""
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(1, emb_dim)
+        self.fc2 = nn.Linear(emb_dim, emb_dim)
+
+    def forward(self, t):
+        # t: (B,) integer timesteps
+        t = t.float().unsqueeze(-1)  # (B,1)
+        x = F.relu(self.fc1(t))
+        x = F.relu(self.fc2(x))
+        return x  # (B, emb_dim)
+
+
+class TransitionDiffusion(nn.Module):
+    """
+    Clean conditional diffusion model for p(s_next | s, a).
+
+    - Train with:   loss = model.loss(s, a, s_next)
+    - Sample with:  s_next_samples = model.sample(s, a, num_samples)
+    """
+
+    def __init__(self, state_dim, action_dim, hidden_dim, hidden_layer,
+                 timesteps=50, time_embed_dim=32, beta_start=1e-4, beta_end=2e-2):
+        super().__init__()
+
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.timesteps = timesteps
+
+        # ----- simple linear beta schedule -----
+        betas = torch.linspace(beta_start, beta_end, timesteps)
+        alphas = 1.0 - betas
+        alphas_cumprod = torch.cumprod(alphas, dim=0)
+
+        self.register_buffer("betas", betas)
+        self.register_buffer("alphas", alphas)
+        self.register_buffer("alphas_cumprod", alphas_cumprod)
+        self.register_buffer("sqrt_alphas_cumprod", torch.sqrt(alphas_cumprod).to())
+        self.register_buffer("sqrt_one_minus_alphas_cumprod", torch.sqrt(1.0 - alphas_cumprod))
+
+        # ----- tiny time embedding -----
+        self.time_mlp = TimeMLP(time_embed_dim)
+
+        # ----- noise prediction network ε_θ -----
+        # Input: [noisy_s_next, s, a, t_emb]
+        in_dim = state_dim + state_dim + action_dim + time_embed_dim
+        layers = [in_dim] + [hidden_dim, hidden_dim] * hidden_layer + [state_dim]
+        self.eps_net = build_net(layers, nn.ReLU, nn.Identity)
+
+    # ---------- utilities ----------
+    def _q_sample(self, s_next_0, t, noise=None):
+        """
+        Forward diffusion:
+        x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * noise
+        """
+        if noise is None:
+            noise = torch.randn_like(s_next_0)
+
+        sqrt_alpha_bar_t = self.sqrt_alphas_cumprod[t].unsqueeze(-1)            # (B,1)
+        sqrt_one_minus_alpha_bar_t = self.sqrt_one_minus_alphas_cumprod[t].unsqueeze(-1)
+        return sqrt_alpha_bar_t * s_next_0 + sqrt_one_minus_alpha_bar_t * noise
+
+    # ---------- core model ----------
+    def forward(self, s, a, noisy_s_next, t):
+        """
+        Predict noise ε given noisy_s_next and condition (s, a, t).
+        """
+        t_emb = self.time_mlp(t)  # (B, time_embed_dim)
+        x = torch.cat([noisy_s_next, s, a, t_emb], dim=-1)
+        eps_pred = self.eps_net(x)
+        return eps_pred
+
+    def loss(self, s, a, s_next):
+        """
+        Standard DDPM denoising loss:
+        E_{t, ε} || ε - ε_θ(x_t, s, a, t) ||^2
+        """
+        B = s_next.size(0)
+
+        # sample random timesteps
+        t = torch.randint(0, self.timesteps, (B,), device=s_next.device, dtype=torch.long)
+        noise = torch.randn_like(s_next)
+
+        noisy_s_next = self._q_sample(s_next, t, noise)
+        eps_pred = self.forward(s, a, noisy_s_next, t)
+
+        return F.mse_loss(eps_pred, noise)
+
+    @torch.no_grad()
+    def sample(self, s, a, num_samples=1):
+        """
+        Generate s_next samples given (s, a).
+
+        s: (B, state_dim)
+        a: (B, action_dim)
+        returns: (B, num_samples, state_dim)
+        """
+        B = s.size(0)
+
+        # expand (s, a) to (B * num_samples, *)
+        s_exp = s.unsqueeze(1).expand(B, num_samples, -1).reshape(B * num_samples, -1)
+        a_exp = a.unsqueeze(1).expand(B, num_samples, -1).reshape(B * num_samples, -1)
+
+        # start from pure noise
+        x = torch.randn(B * num_samples, self.state_dim, device=s.device)
+
+        # naive reverse loop
+        for t_step in reversed(range(self.timesteps)):
+            t = torch.full((x.size(0),), t_step, device=s.device, dtype=torch.long)
+            eps = self.forward(s_exp, a_exp, x, t)
+
+            beta_t = self.betas[t].unsqueeze(-1)
+            alpha_t = self.alphas[t].unsqueeze(-1)
+            alpha_bar_t = self.alphas_cumprod[t].unsqueeze(-1)
+
+            # DDPM mean estimate
+            x0_hat = (x - torch.sqrt(1 - alpha_bar_t) * eps) / torch.sqrt(alpha_bar_t)
+            mean = torch.sqrt(alpha_t) * x0_hat + torch.sqrt(1 - alpha_t) * eps
+
+            if t_step > 0:
+                noise = torch.randn_like(x)
+                x = mean + torch.sqrt(beta_t) * noise
+            else:
+                x = mean
+
+        return x.view(B, num_samples, self.state_dim)
 
 class ExpActivation(nn.Module):
     def forward(self, x):
@@ -246,9 +375,15 @@ class SAC_continuous():
             
         if self.robust:    
             print('This is a robust policy.')
-            self.transition = MLPTransitionVAE(self.state_dim, self.action_dim, 
-                                               hidden_dim=self.hid_dim, hidden_layer=self.net_layer, latent_dim=self.latent_dim).to(self.device)
+            # Generative model for transition dynamics
+            if self.gen_type == 'vae':
+                self.transition = MLPTransitionVAE(self.state_dim, self.action_dim,
+                                                   hidden_dim=self.hid_dim, hidden_layer=self.net_layer, latent_dim=self.latent_dim).to(self.device)
+            elif self.gen_type == 'diffusion':
+                self.transition = TransitionDiffusion(self.state_dim, self.action_dim,
+                                                      hidden_dim=self.hid_dim, hidden_layer=self.net_layer).to(self.device)
             self.trans_optimizer = torch.optim.AdamW(self.transition.parameters(), lr=self.r_lr)
+            # Robust optimization options
             if self.robust_optimizer == 'beta':
                 self.log_beta = nn.Parameter(torch.ones((self.batch_size,1), requires_grad=True, device=self.device) * 1.0)
                 self.beta_optimizer = torch.optim.AdamW([self.log_beta], lr=self.b_lr)
@@ -286,9 +421,9 @@ class SAC_continuous():
         size = s_next.shape[-1]
         v_next = self.v_critic_target(s_next)
         v_next = v_next.cpu().numpy()
-        return - beta * (logsumexp(-v_next/beta) - math.log(size)) - beta * self.delta     
-    
-    def vae_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None):
+        return - beta * (logsumexp(-v_next/beta) - math.log(size)) - beta * self.delta
+
+    def vae_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None, a=None):
         for _ in range(iterations):
             if sample:
                 s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
@@ -299,10 +434,36 @@ class SAC_continuous():
             tr_loss.backward()
             self.trans_optimizer.step()
         if debug_print:
-            print(f"recon_loss: {recon_loss.item()}, kl_div = {kl_div}.")
+            print(f"VAE Train-- recon_loss: {recon_loss.item()}, kl_div = {kl_div}.")
         if writer:
             writer.add_scalar('tr_loss', tr_loss, global_step=step)
         return tr_loss.item()
+    
+    def diffusion_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None, a=None):
+        """     
+        Assumes self.transition is a SimpleTransitionDiffusion (or similar)
+        and self.trans_optimizer is its optimizer.
+        """
+        for _ in range(iterations):
+            if sample:
+                # sample from replay, same as VAE
+                s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
+
+            # diffusion loss: E_{t,eps} || eps - eps_theta(x_t, s, a, t) ||^2
+            tr_loss = self.transition.loss(s_norm, a, s_next_norm)
+
+            self.trans_optimizer.zero_grad()
+            tr_loss.backward()
+            self.trans_optimizer.step()
+
+        if debug_print:
+            print(f"Diffusion Train --loss: {tr_loss.item()}")
+
+        if writer:
+            writer.add_scalar('tr_loss', tr_loss, global_step=step)
+
+        return tr_loss.item()
+
         
     def train(self, writer, step):
         s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
@@ -340,10 +501,13 @@ class SAC_continuous():
         
         #----------------------------- ↓↓↓↓↓ Update R Net ↓↓↓↓↓ ------------------------------#        
         if self.robust: 
-            self.vae_train(debug_print, writer, step, iterations=1, sample=False,
-                               s_norm=s_norm, s_next_norm=s_next_norm)
+            if self.gen_type == 'vae':
+                self.vae_train(debug_print, writer, step, iterations=1, sample=False,
+                               s_norm=s_norm, s_next_norm=s_next_norm, a=a)
+            elif self.gen_type == 'diffusion':
+                self.diffusion_train(debug_print, writer, step, iterations=1, sample=False,
+                                     s_norm=s_norm, s_next_norm=s_next_norm, a=a)
 
-            
         #----------------------------- ↓↓↓↓↓ Robust Update ↓↓↓↓↓ ------------------------------#         
             with torch.no_grad():
                 s_next_sample_norm = self.transition.sample(s_norm, a, 200)

@@ -3,7 +3,7 @@
 env_name: Reacher-v5
 env_index: 4
 max_train_steps: 50000 # 50k
-vae_steps: 5000 # 5k
+gen_steps: 5000 # 5k
 n_critic: 5
 latent_dim: 10
 a_lr: 0.0003 # 3e-4

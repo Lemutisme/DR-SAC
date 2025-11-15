@@ -6,7 +6,7 @@ env_name: Pendulum-v1
 env_index: 0
 reward_adapt: true
 max_train_steps: 10000 # 10k for non-robust, 15k for robust
-vae_steps: 5000
+gen_steps: 5000
 a_lr: 0.0005 # 5e-4
 c_lr: 0.0005 # 5e-4
 b_lr: 0.00005 # 5e-5
