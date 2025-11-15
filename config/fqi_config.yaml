@@ -70,6 +70,8 @@ critic_lr: 1e-3
 n_action: 100
 # number of sampling action for policy (in execution)
 n_action_execute: 100
+# number of training iterations per step
+max_iter: 1000
 
 # BCQ-PQL parameter
 # "QL": q learning (Q-max) back up, "AC": actor-critic backup
