@@ -17,9 +17,10 @@ from hydra.utils import get_original_cwd
 
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action, hid_dim, hid_layers, hidden_activation=nn.ReLU, output_activation=nn.ReLU):
+    def __init__(self, state_dim: int, action_dim: int, max_action: float, hid_dim: list[int], hid_layers: int, 
+                 hidden_activation=nn.ReLU, output_activation=nn.ReLU):
         super(Actor, self).__init__()
-        layers = [state_dim] + [hid_dim, hid_dim] * hid_layers
+        layers = [state_dim] + hid_dim * hid_layers
 
         self.a_net = build_net(layers, hidden_activation, output_activation)
         self.mu_layer = nn.Linear(layers[-1], action_dim)
@@ -61,11 +62,11 @@ class Actor(nn.Module):
         return a * self.max_action, logp_pi_a
 
 class V_Critic(nn.Module):
-    def __init__(self, state_dim, hid_dim, hid_layers):
+    def __init__(self, state_dim: int, hid_dim: list[int], hid_layers: int):
         super(V_Critic, self).__init__()
         self.state_dim = state_dim
 
-        layers = [state_dim] + [hid_dim, hid_dim] * hid_layers + [1]
+        layers = [state_dim] + hid_dim * hid_layers + [1]
         self.V = build_net(layers, nn.ReLU, nn.Identity)
 
     def forward(self, state):
@@ -103,15 +104,15 @@ class VectorizedLinear(nn.Module):
 # Ensemble of vectorized critics
 class VectorizedCritic(nn.Module):
     def __init__(
-        self, state_dim: int, action_dim: int, hidden_dim: int, hid_layers: int, num_critics: int,
+        self, state_dim: int, action_dim: int, hidden_dim: list[int], hid_layers: int, num_critics: int,
     ):
         super().__init__()
-        layers = [VectorizedLinear(state_dim + action_dim, hidden_dim, num_critics),
-                  nn.ReLU()]
-        for _ in range(hid_layers):
-            layers.extend([VectorizedLinear(hidden_dim, hidden_dim, num_critics), 
+        layer_shape = [state_dim + action_dim] + hidden_dim * hid_layers + [1]
+        layers = []
+        for j in range(len(layer_shape)-2):
+            layers.extend([VectorizedLinear(layer_shape[j], layer_shape[j+1], num_critics),
                            nn.ReLU()])
-        layers.append( VectorizedLinear(hidden_dim, 1, num_critics))
+        layers.append(VectorizedLinear(layer_shape[-2], 1, num_critics))
         self.critic = nn.Sequential(*layers)
         # init as in the EDAC paper
         for layer in self.critic[::2]:
@@ -135,9 +136,9 @@ class VectorizedCritic(nn.Module):
 
 # Parallel implementation of two critics.
 class Double_Q_Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
+    def __init__(self, state_dim: int, action_dim: int, hid_dim: list[int], hid_layers: int):
         super(Double_Q_Critic, self).__init__()
-        layers = [state_dim + action_dim] + [hid_dim, hid_dim] * hid_layers + [1]
+        layers = [state_dim + action_dim] + hid_dim * hid_layers + [1]
 
         self.Q_1 = build_net(layers, nn.ReLU, nn.Identity)
         self.Q_2 = build_net(layers, nn.ReLU, nn.Identity)   
@@ -149,16 +150,16 @@ class Double_Q_Critic(nn.Module):
         return q1, q2
 
 class MLPTransitionVAE(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim, hidden_layer, latent_dim):
+    def __init__(self, state_dim: int, action_dim: int, hidden_dim: list[int], hidden_layer: int, latent_dim: int):
         super(MLPTransitionVAE, self).__init__()
         # Encoder layers
-        e_layers = [state_dim * 2 + action_dim] + [hidden_dim, hidden_dim] * hidden_layer
+        e_layers = [state_dim * 2 + action_dim] + hidden_dim * hidden_layer
         self.encoder = build_net(e_layers, nn.ReLU, nn.Identity)
         self.e_mu = nn.Linear(e_layers[-1], latent_dim)
         self.e_logvar = nn.Linear(e_layers[-1], latent_dim)
 
         # Decoder layers: out_dim = state_dim
-        d_layers = [state_dim + action_dim + latent_dim] + [hidden_dim, hidden_dim] * hidden_layer + [state_dim]
+        d_layers = [state_dim + action_dim + latent_dim] + hidden_dim * hidden_layer + [state_dim]
         self.decoder = build_net(d_layers, nn.ReLU, nn.Identity)
         
         self.latent_dim = latent_dim
@@ -221,7 +222,7 @@ class TransitionDiffusion(nn.Module):
     """
 
     def __init__(self, state_dim, action_dim, hidden_dim, hidden_layer,
-                 timesteps=50, time_embed_dim=32, beta_start=1e-4, beta_end=2e-2):
+                 timesteps=20, time_embed_dim=32, beta_start=1e-5, beta_end=1e-3):
         super().__init__()
 
         self.state_dim = state_dim
@@ -245,7 +246,7 @@ class TransitionDiffusion(nn.Module):
         # ----- noise prediction network ε_θ -----
         # Input: [noisy_s_next, s, a, t_emb]
         in_dim = state_dim + state_dim + action_dim + time_embed_dim
-        layers = [in_dim] + [hidden_dim, hidden_dim] * hidden_layer + [state_dim]
+        layers = [in_dim] + hidden_dim * hidden_layer + [state_dim]
         self.eps_net = build_net(layers, nn.ReLU, nn.Identity)
 
     # ---------- utilities ----------
@@ -334,7 +335,7 @@ class ExpActivation(nn.Module):
 class dual(nn.Module):
     def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
         super(dual, self).__init__()  
-        layers = [state_dim + action_dim] + [hid_dim, hid_dim] * hid_layers + [1]
+        layers = [state_dim + action_dim] + hid_dim * hid_layers + [1]
         self.G = build_net(layers, nn.ReLU, ExpActivation)
 
     def forward(self, state, action):
@@ -377,11 +378,10 @@ class SAC_continuous():
             print('This is a robust policy.')
             # Generative model for transition dynamics
             if self.gen_type == 'vae':
-                self.transition = MLPTransitionVAE(self.state_dim, self.action_dim,
-                                                   hidden_dim=self.hid_dim, hidden_layer=self.net_layer, latent_dim=self.latent_dim).to(self.device)
+                self.transition = MLPTransitionVAE(self.state_dim, self.action_dim, hidden_dim=self.hid_dim, hidden_layer=self.net_layer, latent_dim=self.vae_latent_dim).to(self.device)
             elif self.gen_type == 'diffusion':
-                self.transition = TransitionDiffusion(self.state_dim, self.action_dim,
-                                                      hidden_dim=self.hid_dim, hidden_layer=self.net_layer).to(self.device)
+                self.transition = TransitionDiffusion(self.state_dim, self.action_dim, hidden_dim=self.hid_dim, hidden_layer=self.net_layer, 
+                                                      timesteps=self.diffusion_timesteps, time_embed_dim=self.time_embed_dim, beta_start=self.beta_start, beta_end=self.beta_end).to(self.device)
             self.trans_optimizer = torch.optim.AdamW(self.transition.parameters(), lr=self.r_lr)
             # Robust optimization options
             if self.robust_optimizer == 'beta':
