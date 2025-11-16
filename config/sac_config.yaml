@@ -62,9 +62,7 @@ gamma: 0.99
 # Soft update
 tau: 0.005
 # Hidden dimensions
-hid_dim: 256
-# Latent dimensions for vae
-latent_dim: 5
+hid_dim: [256, 256]
 # No. of hidden layers
 net_layer: 1
 # Whether using vectorized critic ensemble
@@ -97,8 +95,19 @@ delta: 0.1
 robust_optimizer: functional # functional, separate
 # Probability of taking random actions, used in some test cases
 random_action_prob: 0.0
+
+# ------------  Generative Model settings  ------------
 # Type of generative model
 gen_type: vae # vae, diffusion
+# Latent dimensions for vae
+vae_latent_dim: 5
+# No. of diffusion timesteps
+diffusion_timesteps: 20
+# Dimension of time embedding in diffusion model
+time_embed_dim: 32
+# Beta schedule for diffusion model
+beta_start: 0.00001 #1e-5
+beta_end: 0.001 #1e-3
 
 # ------------  Hydra output directory  ------------
 hydra:

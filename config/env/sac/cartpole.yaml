@@ -4,7 +4,14 @@
 
 env_name: ContinuousCartPole
 env_index: 1
-max_train_steps: 50000 # 
+max_train_steps: 8000 # 
 
+# Training hyperparameters
 a_lr: 0.0003 # 5e-4
 c_lr: 0.0003 # 5e-4
+
+# Diffusion parameters
+timesteps: 20
+time_embed_dim: 32
+beta_start: 0.00001 # 1e-5
+beta_end: 0.001 # 1e-3

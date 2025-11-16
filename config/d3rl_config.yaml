@@ -15,6 +15,8 @@ device: cuda
 mode: offline # offline, continual, generate
 # Algorithm used to train model
 model: TD3 # TD3, SAC, DDPG, CQL
+# Whether writing summary on Tensorboard
+write: false
 # Whether using render mode in gymnasium
 render: false
 # Whether load model, typically used in evaluation
