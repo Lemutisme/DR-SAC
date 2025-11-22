@@ -15,7 +15,7 @@ from scipy.special import logsumexp
 from scipy.optimize import minimize_scalar
 from hydra.utils import get_original_cwd
 
-
+# ----------------------------- Actor Network ------------------------------ #
 class Actor(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, max_action: float, hid_dim: list[int], hid_layers: int, 
                  hidden_activation=nn.ReLU, output_activation=nn.ReLU):
@@ -61,6 +61,7 @@ class Actor(nn.Module):
 
         return a * self.max_action, logp_pi_a
 
+# ----------------------------- V Critic Network ------------------------------ #
 class V_Critic(nn.Module):
     def __init__(self, state_dim: int, hid_dim: list[int], hid_layers: int):
         super(V_Critic, self).__init__()
@@ -107,12 +108,12 @@ class VectorizedCritic(nn.Module):
         self, state_dim: int, action_dim: int, hidden_dim: list[int], hid_layers: int, num_critics: int,
     ):
         super().__init__()
-        layer_shape = [state_dim + action_dim] + hidden_dim * hid_layers + [1]
-        layers = []
-        for j in range(len(layer_shape)-2):
-            layers.extend([VectorizedLinear(layer_shape[j], layer_shape[j+1], num_critics),
+        layers = [VectorizedLinear(state_dim + action_dim, hidden_dim[0], num_critics),
+                  nn.ReLU()]
+        for _ in range(hid_layers):
+            layers.extend([VectorizedLinear(hidden_dim[0], hidden_dim[0], num_critics), 
                            nn.ReLU()])
-        layers.append(VectorizedLinear(layer_shape[-2], 1, num_critics))
+        layers.append( VectorizedLinear(hidden_dim[0], 1, num_critics))
         self.critic = nn.Sequential(*layers)
         # init as in the EDAC paper
         for layer in self.critic[::2]:
@@ -149,6 +150,8 @@ class Double_Q_Critic(nn.Module):
         q2 = self.Q_2(sa)            
         return q1, q2
 
+# ----------------------------- Generative Transition Models ------------------------------ #
+# VAE-based Transition Model
 class MLPTransitionVAE(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: list[int], hidden_layer: int, latent_dim: int):
         super(MLPTransitionVAE, self).__init__()
@@ -197,7 +200,7 @@ class MLPTransitionVAE(nn.Module):
         s_next_samples = self.decode(s_expanded, a_expanded, z)
         return s_next_samples   
 
-
+# Helper MLP for time embedding
 class TimeMLP(nn.Module):
     """Minimal timestep embedding: scalar t -> vector embedding."""
     def __init__(self, emb_dim):
@@ -212,7 +215,7 @@ class TimeMLP(nn.Module):
         x = F.relu(self.fc2(x))
         return x  # (B, emb_dim)
 
-
+# Diffusion-based Transition Model
 class TransitionDiffusion(nn.Module):
     """
     Clean conditional diffusion model for p(s_next | s, a).
@@ -327,6 +330,233 @@ class TransitionDiffusion(nn.Module):
 
         return x.view(B, num_samples, self.state_dim)
 
+# Flow-based Transition Model 
+class ConditionalFlow(nn.Module):
+    """
+    Simplest conditional RealNVP-like flow:
+    - Split state into two halves: x1, x2
+    - x1 stays unchanged
+    - x2 is affine-transformed using s(x1, s, a), t(x1, s, a)
+    """
+
+    def __init__(self, state_dim, action_dim, hidden_dim=128):
+        super().__init__()
+
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+
+        # split point
+        self.split = state_dim // 2
+
+        # MLP that predicts s(x1, s, a) and t(x1, s, a)
+        input_dim = self.split + state_dim + action_dim   # x1 + s + a
+
+        layers = [input_dim] + hidden_dim + [2 * (state_dim - self.split)]
+        self.st_net = build_net(layers, nn.ReLU, nn.Identity)
+
+    # ------------------------
+    # FORWARD: x -> z  (for training)
+    # ------------------------
+    def forward_flow(self, x, s, a):
+        """
+        x : s_next_norm (B, state_dim)
+        s : s_norm       (B, state_dim)
+        a : action       (B, action_dim)
+        returns: z, log_det_J
+        """
+        x1 = x[:, :self.split]
+        x2 = x[:, self.split:]
+
+        input = torch.cat([x1, s, a], dim=-1)
+        st = self.st_net(input)
+        log_s, t = torch.chunk(st, 2, dim=-1)
+
+        s_val = torch.exp(log_s)
+        y2 = x2 * s_val + t
+
+        y = torch.cat([x1, y2], dim=-1)
+
+        log_det = log_s.sum(dim=-1)  # diagonal Jacobian
+
+        return y, log_det
+
+    # ------------------------
+    # INVERSE: z -> x (for sampling)
+    # ------------------------
+    def inverse_flow(self, z, s, a):
+        """
+        z: base Gaussian samples
+        """
+        z1 = z[:, :self.split]
+        z2 = z[:, self.split:]
+
+        inp = torch.cat([z1, s, a], dim=-1)
+        st = self.st_net(inp)
+        log_s, t = torch.chunk(st, 2, dim=-1)
+
+        s_val = torch.exp(log_s)
+        x2 = (z2 - t) / s_val
+
+        x = torch.cat([z1, x2], dim=-1)
+        return x
+
+    def log_prob(self, x, s, a):
+        z, log_det = self.forward_flow(x, s, a)
+        # base Gaussian log prob
+        base_log_prob = -0.5 * (z.pow(2).sum(dim=-1) + self.state_dim * math.log(2 * math.pi))
+        return base_log_prob + log_det
+
+    def loss(self, s_norm, a, s_next_norm):
+        logp = self.log_prob(s_next_norm, s_norm, a)
+        return -logp.mean()
+
+    @torch.no_grad()
+    def sample(self, s_norm, a, num_samples=1):
+        B = s_norm.size(0)
+
+        # expand conditioning
+        s_exp = s_norm.unsqueeze(1).expand(B, num_samples, -1).reshape(-1, self.state_dim)
+        a_exp = a.unsqueeze(1).expand(B, num_samples, -1).reshape(-1, self.action_dim)
+
+        # base Gaussian
+        z = 0.01 * torch.randn(B * num_samples, self.state_dim, device=s_norm.device)
+
+        # inverse flow
+        x = self.inverse_flow(z, s_exp, a_exp)
+
+        # reshape
+        return x.view(B, num_samples, self.state_dim)
+
+# Score-based Transition Model
+class SigmaMLP(nn.Module):
+    """
+    Tiny embedding network for the noise level sigma.
+    Input: log(sigma) as a scalar
+    Output: sigma embedding vector
+    """
+    def __init__(self, emb_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(1, emb_dim)
+        self.fc2 = nn.Linear(emb_dim, emb_dim)
+
+    def forward(self, log_sigma):
+        # log_sigma: (B, 1)
+        x = F.relu(self.fc1(log_sigma))
+        x = F.relu(self.fc2(x))
+        return x  # (B, emb_dim)
+
+
+class ConditionalScoreModel(nn.Module):
+    """
+    Score-based transition model:
+    s_theta(x_noisy, s, a, sigma) ≈ ∇_x log q_sigma(x | s, a)
+
+    - x: noisy next-state (normalized)
+    - s, a: conditioning (normalized state, raw/normalized action)
+    - sigma: noise scale
+    """
+
+    def __init__(self, state_dim, action_dim, hidden_dim, hidden_layer,
+                 num_sigmas=8, sigma_min=0.01, sigma_max=0.5, sigma_embed_dim=32):
+        super().__init__()
+
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.num_sigmas = num_sigmas
+
+        # Discrete noise levels (log-spaced, standard NCSN-style)
+        sigmas = torch.logspace(math.log10(sigma_max), math.log10(sigma_min), num_sigmas)
+        self.register_buffer("sigmas", sigmas)  # (num_sigmas,)
+
+        # Sigma embedding
+        self.sigma_mlp = SigmaMLP(sigma_embed_dim)
+
+        # Score network: input = [x_noisy, s, a, sigma_emb] -> output = score (same dim as state)
+        in_dim = state_dim + state_dim + action_dim + sigma_embed_dim
+        layers = [in_dim] + hidden_dim * hidden_layer + [state_dim]
+        self.score_net = build_net(layers, nn.ReLU, nn.Identity)
+
+    def forward(self, x_noisy, s_norm, a, sigma_idx):
+        """
+        x_noisy: (B, state_dim) - noisy next state
+        s_norm: (B, state_dim)  - normalized current state
+        a:      (B, action_dim)
+        sigma_idx: (B,) long tensor of indices into self.sigmas
+        """
+        sigma = self.sigmas[sigma_idx].unsqueeze(-1)   # (B, 1)
+        log_sigma = torch.log(sigma)                   # (B, 1)
+        sigma_emb = self.sigma_mlp(log_sigma)          # (B, sigma_embed_dim)
+
+        inp = torch.cat([x_noisy, s_norm, a, sigma_emb], dim=-1)
+        score = self.score_net(inp)                    # (B, state_dim)
+        return score
+
+    def loss(self, s_norm, a, s_next_norm):
+        """
+        Denoising score matching loss:
+        E_sigma E_{epsilon}[ || s_theta(x_noisy, s, a, sigma) + epsilon/sigma ||^2 ]
+
+        s_norm:      (B, state_dim)
+        a:           (B, action_dim)
+        s_next_norm: (B, state_dim)  - clean next state
+        """
+        B = s_next_norm.size(0)
+
+        # Sample noise levels (indices) uniformly
+        sigma_idx = torch.randint(0, self.num_sigmas, (B,), device=s_next_norm.device, dtype=torch.long)
+        sigma = self.sigmas[sigma_idx].unsqueeze(-1)  # (B, 1)
+
+        # Add Gaussian noise to s_next_norm
+        eps = torch.randn_like(s_next_norm)           # (B, state_dim)
+        x_noisy = s_next_norm + sigma * eps           # x = x0 + sigma * eps
+
+        # True score: -(x - x0)/sigma^2 = -eps / sigma
+        target_score = -eps / sigma                   # (B, state_dim)
+
+        # Predicted score
+        score_pred = self.forward(x_noisy, s_norm, a, sigma_idx)
+
+        # Score matching loss
+        loss = F.mse_loss(score_pred, target_score)
+        return loss
+
+    @torch.no_grad()
+    def sample(self, s_norm, a, num_samples=1, n_steps_each=5, step_scale=0.1):
+        """
+        Approximate sampling via annealed Langevin dynamics.
+        This is a simple, not highly optimized version suitable for ablation.
+
+        s_norm: (B, state_dim)
+        a:      (B, action_dim)
+        returns: (B, num_samples, state_dim) in normalized space
+        """
+        B = s_norm.size(0)
+
+        # Expand conditioning
+        s_exp = s_norm.unsqueeze(1).expand(B, num_samples, -1).reshape(-1, self.state_dim)
+        a_exp = a.unsqueeze(1).expand(B, num_samples, -1).reshape(-1, self.action_dim)
+
+        # Initialize x from standard normal
+        x = torch.randn(B * num_samples, self.state_dim, device=s_norm.device)
+
+        # Annealed Langevin dynamics over sigmas (from large to small)
+        for k in reversed(range(self.num_sigmas)):
+            sigma_k = self.sigmas[k]
+            sigma_idx = torch.full((x.size(0),),k, device=s_norm.device, dtype=torch.long)
+            # step size scaled with sigma^2
+            alpha = step_scale * (sigma_k ** 2)
+
+            for _ in range(n_steps_each):
+                score = self.forward(x, s_exp, a_exp, sigma_idx)  # (N, state_dim)
+                noise = torch.randn_like(x)
+
+                # Langevin update
+                x = x + alpha * score + math.sqrt(2.0 * alpha) * noise
+
+        # Reshape back to (B, num_samples, state_dim)
+        x = x.view(B, num_samples, self.state_dim)
+        return x
+
 class ExpActivation(nn.Module):
     def forward(self, x):
         return torch.exp(x)   
@@ -342,6 +572,7 @@ class dual(nn.Module):
         sa = torch.cat([state, action], dim=1)          
         return self.G(sa)
 
+# ----------------------------- Soft Actor-Critic (SAC) Agent ------------------------------ #
 class SAC_continuous():
     def __init__(self, **kwargs):
         # Init hyperparameters for agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
@@ -382,6 +613,10 @@ class SAC_continuous():
             elif self.gen_type == 'diffusion':
                 self.transition = TransitionDiffusion(self.state_dim, self.action_dim, hidden_dim=self.hid_dim, hidden_layer=self.net_layer, 
                                                       timesteps=self.diffusion_timesteps, time_embed_dim=self.time_embed_dim, beta_start=self.beta_start, beta_end=self.beta_end).to(self.device)
+            elif self.gen_type == 'flow':
+                self.transition = ConditionalFlow(self.state_dim, self.action_dim, hidden_dim=self.hid_dim).to(self.device)
+            elif self.gen_type == 'score':
+                self.transition = ConditionalScoreModel(self.state_dim, self.action_dim, hidden_dim=self.hid_dim, hidden_layer=self.net_layer).to(self.device)
             self.trans_optimizer = torch.optim.AdamW(self.transition.parameters(), lr=self.r_lr)
             # Robust optimization options
             if self.robust_optimizer == 'beta':
@@ -406,11 +641,6 @@ class SAC_continuous():
             a, _ = self.actor(state, deterministic, with_logprob=False)
         return a.cpu().numpy()[0]
 
-    def vae_loss(self, s_next, s_next_recon, mu, logvar, beta=1):
-        recon_loss = F.mse_loss(s_next_recon, s_next)
-        kl_div = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
-        return recon_loss, beta * kl_div
-
     def dual_func_g(self, s, a, s_next):
         size = s_next.shape[1]
         dual_sa = self.g(s,a)
@@ -423,6 +653,11 @@ class SAC_continuous():
         v_next = v_next.cpu().numpy()
         return - beta * (logsumexp(-v_next/beta) - math.log(size)) - beta * self.delta
 
+    def vae_loss(self, s_next, s_next_recon, mu, logvar, beta=1):
+        recon_loss = F.mse_loss(s_next_recon, s_next)
+        kl_div = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).mean()
+        return recon_loss, beta * kl_div
+    
     def vae_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None, a=None):
         for _ in range(iterations):
             if sample:
@@ -458,6 +693,61 @@ class SAC_continuous():
 
         if debug_print:
             print(f"Diffusion Train --loss: {tr_loss.item()}")
+
+        if writer:
+            writer.add_scalar('tr_loss', tr_loss, global_step=step)
+
+        return tr_loss.item()
+
+    def flow_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None, a=None):
+        for _ in range(iterations):
+            if sample:
+                s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
+            tr_loss = self.transition.loss(s_norm, a, s_next_norm)
+
+            self.trans_optimizer.zero_grad()
+            tr_loss.backward()
+            self.trans_optimizer.step()
+
+        if debug_print:
+            print(f"Flow Train --loss: {tr_loss.item()}")
+            # original log prob
+            logp_true = self.transition.log_prob(s_next_norm, s_norm, a).mean().item()
+
+            # shuffled conditioning
+            perm = torch.randperm(s_norm.size(0))
+            logp_shuffled = self.transition.log_prob(s_next_norm, s_norm[perm], a[perm]).mean().item()
+
+            print("logp_true:", logp_true, "logp_shuffled:", logp_shuffled)
+
+
+        if writer:
+            writer.add_scalar("flow_loss", tr_loss, global_step=step)
+
+        return tr_loss.item()
+    
+    def score_train(self, debug_print, writer, step, iterations,
+                sample=True, s_norm=None, s_next_norm=None, a=None):
+        """
+        Train the score-based transition model (ConditionalScoreModel)
+
+        Assumes:
+            - self.transition is a ConditionalScoreModel
+            - self.trans_optimizer is its optimizer
+            - replay_buffer.sample returns (..., s_norm, s_next_norm)
+        """
+        for _ in range(iterations):
+            if sample:
+                s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
+
+            tr_loss = self.transition.loss(s_norm, a, s_next_norm)
+
+            self.trans_optimizer.zero_grad()
+            tr_loss.backward()
+            self.trans_optimizer.step()
+
+        if debug_print:
+            print(f"score_tr_loss: {tr_loss.item()}")
 
         if writer:
             writer.add_scalar('tr_loss', tr_loss, global_step=step)
@@ -507,6 +797,12 @@ class SAC_continuous():
             elif self.gen_type == 'diffusion':
                 self.diffusion_train(debug_print, writer, step, iterations=1, sample=False,
                                      s_norm=s_norm, s_next_norm=s_next_norm, a=a)
+            elif self.gen_type == 'flow':
+                self.flow_train(debug_print, writer, step, iterations=1, sample=False,
+                                s_norm=s_norm, s_next_norm=s_next_norm, a=a)
+            elif self.gen_type == 'score':
+                self.score_train(debug_print, writer, step, iterations=1, sample=False,
+                                 s_norm=s_norm, s_next_norm=s_next_norm, a=a)
 
         #----------------------------- ↓↓↓↓↓ Robust Update ↓↓↓↓↓ ------------------------------#         
             with torch.no_grad():
@@ -645,6 +941,8 @@ class SAC_continuous():
 
     def load(self, EnvName, load_path):
         model_dir = Path(get_original_cwd())/f"{load_path}/models/SAC_model/{EnvName}"
+        
+        state_dict = torch.load(model_dir / f"q.pth", weights_only=True)
 
         self.actor.load_state_dict(torch.load(model_dir / f"actor.pth", map_location=self.device, weights_only=True))
         self.q_critic.load_state_dict(torch.load(model_dir / f"q.pth", map_location=self.device, weights_only=True))

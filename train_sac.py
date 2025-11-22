@@ -222,6 +222,10 @@ def main(cfg: DictConfig):
                         gen_loss = agent.vae_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)      
                     elif opt.gen_type == 'diffusion':
                         gen_loss = agent.diffusion_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)
+                    elif opt.gen_type == 'flow':
+                        gen_loss = agent.flow_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)
+                    elif opt.gen_type == 'score':
+                        gen_loss = agent.score_train(opt.debug_print, writer, total_steps, iterations=opt.eval_interval)   
                     total_steps += opt.eval_interval
                     pbar.update(opt.eval_interval)
                     
