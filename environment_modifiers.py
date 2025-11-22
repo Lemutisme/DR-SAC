@@ -399,7 +399,7 @@ class ObservationNoiseWrapper(gym.Wrapper):
 
         Args:
             env: The environment to wrap
-            noise_type: Type of noise ('gaussian', 'uniform', 'saltpepper', 'adversarial')
+            noise_type: Type of noise ('gaussian', 'uniform', 'cauchy', 'saltpepper', 'adversarial')
             noise_level: Standard deviation/magnitude of the noise
             noise_freq: Frequency of applying noise (1.0 = every step)
         """
@@ -437,6 +437,11 @@ class ObservationNoiseWrapper(gym.Wrapper):
         elif self.noise_type == 'uniform':
             for i in self.noise_dim:
                 noise[i] = np.random.uniform(-self.noise_level, self.noise_level)
+            return obs + noise
+        elif self.noise_type == 'cauchy':
+            # Cauchy noise
+            for i in self.noise_dim:
+                noise[i] = self.noise_level * np.random.standard_cauchy()
             return obs + noise
         elif self.noise_type == 'saltpepper':
             # Salt and pepper noise
@@ -492,9 +497,14 @@ class ActionPerturbationWrapper(gym.Wrapper):
                 # Drop action (use last action or zero)
                 action = self.last_action if self.last_action is not None else np.zeros_like(action)
 
-            elif self.perturb_type == 'noise':
+            elif self.perturb_type == 'normal':
                 # Add random noise to action
                 action = action + np.random.normal(loc=0, scale=self.perturb_level, size=action.shape).astype(np.float32)
+                action = np.clip(action, self.action_space.low, self.action_space.high)
+                
+            elif self.perturb_type == 'cauchy':
+                # Add random noise to action
+                action = action + self.perturb_level *np.random.standard_cauchy(size=action.shape).astype(np.float32)
                 action = np.clip(action, self.action_space.low, self.action_space.high)
 
             elif self.perturb_type == 'delay':
@@ -753,11 +763,11 @@ def create_env_with_mods(env_name, env_config):
         # Dimension 0-3 in Reacher state vectors are trigonometric values
         elif env_name == 'Reacher-v5':
             noise_dim = range(4,10)
-        logger.info(f"Adding observation noise: {env_config.observation_noise.type} with level {env_config.observation_noise.level}")
+        logger.info(f"Adding observation noise: {env_config.observation_noise.type} with level {env_config.observation_noise.noise_level}")
         train_env = ObservationNoiseWrapper(
             train_env,
             noise_type=env_config.observation_noise.type,
-            noise_level=env_config.observation_noise.level,
+            noise_level=env_config.observation_noise.noise_level,
             noise_freq=env_config.observation_noise.frequency,
             noise_dim=noise_dim
         )
@@ -804,11 +814,11 @@ def create_env_with_mods(env_name, env_config):
             eval_env = ObservationNoiseWrapper(
                 eval_env,
                 noise_type=env_config.observation_noise.type,
-                noise_level=env_config.observation_noise.level,
+                noise_level=env_config.observation_noise.noise_level,
                 noise_freq=env_config.observation_noise.frequency,
                 noise_dim=noise_dim
             )
-            logger.info(f"Evaluation environment using observation noise level: {env_config.observation_noise.level}")
+            logger.info(f"Evaluation environment using observation noise level: {env_config.observation_noise.noise_level}")
 
         # Apply other modifications to eval env if needed...
         if env_config.action_perturb.enabled and env_config.eval.include_action_perturb:

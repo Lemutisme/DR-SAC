@@ -7,13 +7,13 @@ use_mods: false  # Master switch for all modifications
 observation_noise:
   enabled: false
   type: "gaussian"  # Options: gaussian, uniform, saltpepper, adversarial
-  level: 0.1  # Noise magnitude
+  noise_level: 0.1  # Noise magnitude
   frequency: 1.0  # Frequency of applying noise (1.0 = every step)
 
 # Action perturbation configuration
 action_perturb:
   enabled: false
-  type: "noise"  # Options: drop, noise, delay, stuck
+  type: "normal"  # Options: drop, normal, cauchy, delay, stuck
   probability: 1.0  # Probability of perturbation
   level: 0.1  # Magnitude of perturbation
 
