@@ -753,7 +753,24 @@ class SAC_continuous():
             writer.add_scalar('tr_loss', tr_loss, global_step=step)
 
         return tr_loss.item()
-
+    
+    def bc_loss(self, debug_print, writer, step, iterations):
+        scores = []
+        for _ in range(iterations):
+            s, a, r, s_next, dw, _, _ = self.replay_buffer.sample(self.batch_size)
+            debug_print = self.debug_print and (step % 1000 == 0)
+            
+            policy_a , _ = self.actor(s, deterministic=True, with_logprob=False)
+            bc_loss = F.mse_loss(policy_a, a)
+            
+            # self.actor_optimizer.zero_grad()
+            # bc_loss.backward()
+            # self.actor_optimizer.step()
+            if debug_print:
+                print(f"bc_loss: {bc_loss.item()}")
+        if writer:
+            writer.add_scalar('bc_loss', bc_loss, global_step=step)
+        return bc_loss
         
     def train(self, writer, step):
         s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
@@ -901,6 +918,11 @@ class SAC_continuous():
         ### Jπ(θ) = E[α * logπ(a|s) - Q(s,a)] ###
         a_loss = (self.alpha * log_pi_a - Q_min).mean()
         #########################################
+        
+        policy_a , _ = self.actor(s, deterministic=True, with_logprob=False)
+        bc_loss = F.mse_loss(policy_a, a)
+        
+        a_loss = (1 - self.bc_weight) * a_loss + self.bc_weight * bc_loss
             
         self.actor_optimizer.zero_grad()
         a_loss.backward()

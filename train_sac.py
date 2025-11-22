@@ -234,7 +234,7 @@ def main(cfg: DictConfig):
                                  f"Steps: {int(total_steps/1000)}k, "
                                  f"Generative Model: {opt.gen_type}, "
                                  f"Generative Model Loss: {gen_loss}")
-                
+                        
                 # Policy training                         
                 while total_steps < opt.max_train_steps:
                     agent.train(writer, total_steps)
@@ -242,8 +242,9 @@ def main(cfg: DictConfig):
                     pbar.update(1)
                     
                     # Learning rate decay
-                    agent.a_lr *= 0.999
-                    agent.c_lr *= 0.999
+                    agent.a_lr *= 1-1e-5
+                    agent.c_lr *= 1-1e-5
+                    agent.bc_weight *= 1-opt.bc_decay_rate
                     
                     # Evaluate and log periodically
                     if total_steps % opt.eval_interval == 0:
@@ -255,7 +256,8 @@ def main(cfg: DictConfig):
 
                         log.info(f"EnvName: {BrifEnvName[opt.env_index]}, "
                                  f"Steps: {int(total_steps/1000)}k, "
-                                 f"Episode Reward: {ep_r}")
+                                 f"Episode Reward: {ep_r}",
+                                 f"bc_weight: {agent.bc_weight:.6f}")
                         
                     # Save model at fixed intervals
                     if opt.save_model and total_steps % opt.save_interval == 0:
