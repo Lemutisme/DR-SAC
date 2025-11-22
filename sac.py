@@ -771,6 +771,22 @@ class SAC_continuous():
         if writer:
             writer.add_scalar('bc_loss', bc_loss, global_step=step)
         return bc_loss
+
+    def behavior_clone_step(self, writer=None, global_step=0):
+        """
+        Single gradient step of pure behavior cloning on the offline dataset.
+        """
+        s, a, _, _, _, _, _ = self.replay_buffer.sample(self.batch_size)
+        policy_a, _ = self.actor(s, deterministic=True, with_logprob=False)
+        bc_loss = F.mse_loss(policy_a, a)
+
+        self.actor_optimizer.zero_grad()
+        bc_loss.backward()
+        self.actor_optimizer.step()
+
+        if writer is not None:
+            writer.add_scalar('bc_pretrain_loss', bc_loss, global_step=global_step)
+        return bc_loss.item()
         
     def train(self, writer, step):
         s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
@@ -909,11 +925,12 @@ class SAC_continuous():
         if not self.use_v:
             policy_a , log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
             if self.critic_ensemble:
-                Q_list = self.q_critic_target(s, policy_a)
+                Q_list = self.q_critic(s, policy_a)
                 assert Q_list.shape[0] == self.n_critic
                 Q_min = Q_list.min(0).values.unsqueeze(-1)
             else:
                 current_Q1, current_Q2 = self.q_critic(s, policy_a)
+                Q_min = torch.min(current_Q1, current_Q2)
         #########################################
         ### Jπ(θ) = E[α * logπ(a|s) - Q(s,a)] ###
         a_loss = (self.alpha * log_pi_a - Q_min).mean()

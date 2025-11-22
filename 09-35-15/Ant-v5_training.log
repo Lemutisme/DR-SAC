@@ -1,0 +1,94 @@
+[2025-11-15 09:35:15,264][__main__][INFO] - Configuration:
+device: cuda
+mode: continual
+model: TD3
+write: false
+render: false
+load_model: true
+load_path: /home/mx/DRAC/outputs/TD3/2025-11-15/01-39-31/model.d3
+eval_model: false
+save_model: true
+data_path: None
+epsilon: 0.1
+seed: 42
+max_train_steps: 1000000
+save_interval: 10000
+update_every: 50
+learning_starts: 10000
+gamma: 0.99
+tau: 0.005
+net_arch:
+- 256
+- 256
+net_layer: 1
+n_critic: 2
+a_lr: 0.001
+c_lr: 0.001
+batch_size: 256
+reward_adapt: false
+random_action_prob: 0.0
+env_name: Ant-v5
+env_index: 5
+env_mods:
+  use_mods: false
+  observation_noise:
+    enabled: false
+    type: gaussian
+    level: 0.1
+    frequency: 1.0
+  action_perturb:
+    enabled: false
+    type: noise
+    probability: 1.0
+    level: 0.1
+  reward_shift:
+    enabled: false
+    type: scale
+    param: 0.9
+    noise_level: 0.1
+  transition_perturb:
+    enabled: false
+    type: teleport
+    probability: 0.05
+    level: 0.1
+  param_shift:
+    enabled: false
+    train_apply: false
+    eval_apply: true
+    gravity_factor: 1.0
+    mass_factor: 1.0
+    length_factor: 1.0
+    force_mag_factor: 1.0
+    wind_power: 0.0
+    turbulence_power: 1.5
+    engine_factor: 1.0
+    back_stiff: 1.0
+    front_stiff: 1.0
+    back_damping: 1.0
+    front_damping: 1.0
+    act_ctrlrange: 1.0
+    joint0_stiff: 0.0
+    joint1_stiff: 0.0
+    joint0_damping: 1.0
+    joint1_damping: 1.0
+  eval:
+    use_modified: true
+    include_observation_perturb: true
+    include_action_perturb: true
+    include_reward_shift: true
+    include_transition_perturb: true
+
+[2025-11-15 09:35:15,334][__main__][INFO] - System information:
+[2025-11-15 09:35:15,334][__main__][INFO] -   Platform: Linux-6.14.0-33-generic-x86_64-with-glibc2.10
+[2025-11-15 09:35:15,334][__main__][INFO] -   Python: 3.8.19
+[2025-11-15 09:35:15,335][__main__][INFO] -   PyTorch: 2.4.1+cu121
+[2025-11-15 09:35:15,335][__main__][INFO] -   CUDA Available: True
+[2025-11-15 09:35:15,335][__main__][INFO] -   CUDA Version: 12.1
+[2025-11-15 09:35:15,335][__main__][INFO] -   GPU: NVIDIA GeForce GTX 1080 Ti
+[2025-11-15 09:35:15,346][__main__][INFO] - Env: Ant-v5  state_dim: 105  action_dim: 8  max_a: 1.0  min_a: -1.0  max_e_steps: 1000
+[2025-11-15 09:35:15,348][__main__][INFO] - Random Seed: 42
+[2025-11-15 09:35:15,348][__main__][INFO] - Models will be saved to models/d3rl_model/ANTV5
+[2025-11-15 09:35:15,348][__main__][INFO] - Loading pre-trained model
+[2025-11-15 16:43:12,669][__main__][INFO] - Training completed. Evaluating across 20 episodes
+[2025-11-15 16:43:27,776][__main__][INFO] - Final evaluation - Mean: 4208.00, Std: 348.65
+[2025-11-15 16:43:27,776][__main__][INFO] - 90th percentile: 4339.90, 10th percentile: 4236.48

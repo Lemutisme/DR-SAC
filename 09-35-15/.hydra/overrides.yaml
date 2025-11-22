@@ -1,0 +1,5 @@
+- env/d3rl=ant
+- model=TD3
+- mode=continual
+- load_model=True
+- load_path=/home/mx/DRAC/outputs/TD3/2025-11-15/01-39-31/model.d3

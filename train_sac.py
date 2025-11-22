@@ -1,4 +1,5 @@
 from utils import evaluate_policy as evaluate_policy
+from utils import Reward_adapter
 from environment_modifiers import register
 from continuous_cartpole import register
 from sac import SAC_continuous
@@ -87,6 +88,10 @@ def main(cfg: DictConfig):
     for key, value in cfg.items():
         if key not in ['hydra']:  # Skip hydra config
             setattr(opt, key, value)
+    
+    # Handle initial_alpha override
+    if hasattr(opt, 'initial_alpha'):
+        opt.alpha = opt.initial_alpha
 
     # 2. Create training and evaluation environments
     # Import environment modifier if environment modifications are enabled
@@ -213,6 +218,52 @@ def main(cfg: DictConfig):
         # Offline learning doesn't have exploration stage
         if opt.mode == 'offline':
             agent.replay_buffer.load(opt.data_path, opt.reward_adapt, opt.reward_normalize, opt.env_index)
+
+            if getattr(opt, "bc_pretrain_steps", 0) > 0:
+                log.info(f"Starting behavior cloning pretraining for {opt.bc_pretrain_steps} steps.")
+                summary_logger.info(f"BC pretraining scheduled: {opt.bc_pretrain_steps} steps")
+                with tqdm(total=opt.bc_pretrain_steps, desc="BC Pretrain", ncols=100) as bc_bar:
+                    for bc_step in range(opt.bc_pretrain_steps):
+                        bc_loss = agent.behavior_clone_step(writer, bc_step)
+                        bc_bar.update(1)
+                        if (bc_step + 1) % getattr(opt, "bc_pretrain_log_interval", 1000) == 0:
+                            log.info(f"[BC] Step {bc_step+1}, Loss: {bc_loss:.4f}")
+                            summary_logger.info(f"[BC] Step {bc_step+1}, Loss: {bc_loss:.4f}")
+
+            def rollout_with_agent(environment, steps, epsilon):
+                nonlocal env_seed
+                collected = 0
+                state, info = environment.reset(seed=env_seed)
+                env_seed += 1
+                with tqdm(total=steps, desc="Policy Rollout", ncols=100) as roll_bar:
+                    while collected < steps:
+                        if np.random.random() < epsilon:
+                            action = environment.action_space.sample()
+                        else:
+                            action = agent.select_action(state, deterministic=False)
+
+                        next_state, reward, dw, tr, info = environment.step(action)
+                        if opt.reward_adapt:
+                            reward = Reward_adapter(reward, opt.env_index)
+                        done = (dw or tr)
+                        agent.replay_buffer.add(state, action, reward, next_state, done)
+                        state = next_state
+                        collected += 1
+                        roll_bar.update(1)
+
+                        if done:
+                            state, info = environment.reset(seed=env_seed)
+                            env_seed += 1
+                return collected
+
+            if getattr(opt, "rollout_after_bc", False) and getattr(opt, "rollout_steps", 0) > 0:
+                epsilon = getattr(opt, "rollout_epsilon", 0.0)
+                log.info(f"Collecting {opt.rollout_steps} rollout steps with epsilon={epsilon:.2f} before SAC updates.")
+                summary_logger.info(f"Policy rollout requested: {opt.rollout_steps} steps")
+                rollout_with_agent(env, opt.rollout_steps, epsilon)
+                log.info(f"Replay buffer now holds {agent.replay_buffer.size} transitions after rollout augmentation.")
+                summary_logger.info(f"Replay buffer size post-rollout: {agent.replay_buffer.size}")
+
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
                 # If robust policy, train VAE first
                 if not opt.robust:
@@ -256,7 +307,7 @@ def main(cfg: DictConfig):
 
                         log.info(f"EnvName: {BrifEnvName[opt.env_index]}, "
                                  f"Steps: {int(total_steps/1000)}k, "
-                                 f"Episode Reward: {ep_r}",
+                                 f"Episode Reward: {ep_r}, "
                                  f"bc_weight: {agent.bc_weight:.6f}")
                         
                     # Save model at fixed intervals
@@ -283,6 +334,10 @@ def main(cfg: DictConfig):
 
                         # Step the environment
                         next_state, reward, dw, tr, info = env.step(action)
+                        
+                        # Reward adaptation for online generation if enabled
+                        if opt.reward_adapt:
+                             reward = Reward_adapter(reward, opt.env_index)
 
                         # Check for terminal state
                         done = (dw or tr)
@@ -331,6 +386,10 @@ def main(cfg: DictConfig):
                         # Step the environment
                         next_state, reward, dw, tr, info = env.step(action)
                         ep_reward += reward
+
+                        # Apply reward adapter if enabled
+                        if opt.reward_adapt:
+                            reward = Reward_adapter(reward, opt.env_index)
 
                         # Check for terminal state
                         done = (dw or tr)

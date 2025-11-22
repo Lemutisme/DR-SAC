@@ -47,6 +47,13 @@ gen_steps: 0
 bc_weight: 0
 # Behavior Cloning pre-training steps
 bc_decay_rate: 1e-6
+# Optional pure behavior cloning warmup before SAC training
+bc_pretrain_steps: 0
+bc_pretrain_log_interval: 1000
+# Optional self-rollout after BC warmup
+rollout_after_bc: false
+rollout_steps: 0
+rollout_epsilon: 0.0
 # Save every xxx steps
 save_interval: 10000
 # Evaluate every xxx steps

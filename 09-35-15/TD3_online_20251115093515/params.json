@@ -1,0 +1,78 @@
+{
+  "observation_shape": [
+    105
+  ],
+  "action_size": 8,
+  "config": {
+    "type": "td3",
+    "params": {
+      "batch_size": 256,
+      "gamma": 0.99,
+      "observation_scaler": {
+        "type": "none",
+        "params": {}
+      },
+      "action_scaler": {
+        "type": "none",
+        "params": {}
+      },
+      "reward_scaler": {
+        "type": "none",
+        "params": {}
+      },
+      "actor_learning_rate": 0.001,
+      "critic_learning_rate": 0.001,
+      "actor_optim_factory": {
+        "type": "adam",
+        "params": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "weight_decay": 0.0,
+          "amsgrad": false
+        }
+      },
+      "critic_optim_factory": {
+        "type": "adam",
+        "params": {
+          "betas": [
+            0.9,
+            0.999
+          ],
+          "eps": 1e-08,
+          "weight_decay": 0.0,
+          "amsgrad": false
+        }
+      },
+      "actor_encoder_factory": {
+        "type": "default",
+        "params": {
+          "activation": "relu",
+          "use_batch_norm": false,
+          "dropout_rate": null
+        }
+      },
+      "critic_encoder_factory": {
+        "type": "default",
+        "params": {
+          "activation": "relu",
+          "use_batch_norm": false,
+          "dropout_rate": null
+        }
+      },
+      "q_func_factory": {
+        "type": "mean",
+        "params": {
+          "share_encoder": false
+        }
+      },
+      "tau": 0.005,
+      "n_critics": 2,
+      "target_smoothing_sigma": 0.2,
+      "target_smoothing_clip": 0.5,
+      "update_actor_interval": 2
+    }
+  }
+}

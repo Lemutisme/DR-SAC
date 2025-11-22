@@ -1,0 +1,78 @@
+device: cuda
+mode: continual
+model: TD3
+write: false
+render: false
+load_model: true
+load_path: /home/mx/DRAC/outputs/TD3/2025-11-15/01-39-31/model.d3
+eval_model: false
+save_model: true
+data_path: None
+epsilon: 0.1
+seed: 42
+max_train_steps: 1000000
+save_interval: 10000
+update_every: 50
+learning_starts: 10000
+gamma: 0.99
+tau: 0.005
+net_arch:
+- 256
+- 256
+net_layer: 1
+n_critic: 2
+a_lr: 0.001
+c_lr: 0.001
+batch_size: 256
+reward_adapt: false
+random_action_prob: 0.0
+env_name: Ant-v5
+env_index: 5
+env_mods:
+  use_mods: false
+  observation_noise:
+    enabled: false
+    type: gaussian
+    level: 0.1
+    frequency: 1.0
+  action_perturb:
+    enabled: false
+    type: noise
+    probability: 1.0
+    level: 0.1
+  reward_shift:
+    enabled: false
+    type: scale
+    param: 0.9
+    noise_level: 0.1
+  transition_perturb:
+    enabled: false
+    type: teleport
+    probability: 0.05
+    level: 0.1
+  param_shift:
+    enabled: false
+    train_apply: false
+    eval_apply: true
+    gravity_factor: 1.0
+    mass_factor: 1.0
+    length_factor: 1.0
+    force_mag_factor: 1.0
+    wind_power: 0.0
+    turbulence_power: 1.5
+    engine_factor: 1.0
+    back_stiff: 1.0
+    front_stiff: 1.0
+    back_damping: 1.0
+    front_damping: 1.0
+    act_ctrlrange: 1.0
+    joint0_stiff: 0.0
+    joint1_stiff: 0.0
+    joint0_damping: 1.0
+    joint1_damping: 1.0
+  eval:
+    use_modified: true
+    include_observation_perturb: true
+    include_action_perturb: true
+    include_reward_shift: true
+    include_transition_perturb: true
