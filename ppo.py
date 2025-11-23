@@ -1,6 +1,6 @@
 from utils import evaluate_policy_PPO as evaluate_policy
 from utils import Action_adapter_pos as Action_adapter
-from utils import Reward_adapter, str2bool, build_net
+from utils import Reward_adapter, str2bool, build_net, set_reward_scale_override
 from ReplayBuffer import ReplayBuffer
 
 import copy
@@ -455,14 +455,16 @@ def main(cfg: DictConfig):
         "ContinuousCartPole",
         'LunarLanderContinuous-v3',
         'HalfCheetah-v5',
-        'Reacher-v5'
+        'Reacher-v5',
+        'Ant-v5'
     ]
     BrifEnvName = [
         'PV1',
         'CPV0',
         'LLdV3',
         'HCV5',
-        'RV5'
+        'RV5',
+        'ANTV5'
     ]
 
     # Create a config object for compatibility with rest of code
@@ -470,6 +472,8 @@ def main(cfg: DictConfig):
     for key, value in cfg.items():
         if key not in ['hydra']:  # Skip hydra config
             setattr(opt, key, value)
+
+    set_reward_scale_override(opt.env_index, getattr(opt, "reward_scale", None))
 
     # 2. Build Training and Evaluation Environments
     env = gym.make(EnvName[opt.env_index])
@@ -609,10 +613,10 @@ def main(cfg: DictConfig):
                         act = Action_adapter(a, opt.max_action)  # [0,1] -> [-max_action, max_action]
 
                         # (iii) Step environment
-                        s_next, r, dw, tr, info = env.step(act)
-                        r = Reward_adapter(r, opt.env_index)       # Custom reward adapter
+                        s_next, r_raw, dw, tr, info = env.step(act)
+                        r = Reward_adapter(r_raw, opt.env_index)       # Custom reward adapter
                         done = (dw or tr)
-                        episode_reward += r
+                        episode_reward += r_raw
 
                         # (iv) Store transition for PPO
                         agent.put_data(
@@ -697,7 +701,7 @@ def main(cfg: DictConfig):
 
                     log.info(f"Episode {episode_count} completed with reward {episode_reward:.2f} in {episode_steps} steps")
                     log.info(f"Recent average reward (last {len(recent_rewards)} episodes): {np.mean(recent_rewards):.2f}")
-                    summary_logger.info(f"Episode {episode_count}: Reward = {episode_reward:.2f}, Steps = {episode_steps}")
+            summary_logger.info(f"Episode {episode_count}: Reward = {episode_reward:.2f}, Steps = {episode_steps}")
             
         elif opt.mode == 'generate':
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:

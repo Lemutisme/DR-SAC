@@ -59,6 +59,11 @@ param_shift:
   joint1_stiff: 0.0
   joint0_damping: 1.0
   joint1_damping: 1.0
+  # For Ant
+  joint_stiff: 1.0
+  joint_damping: 1.0
+  torso_mass_factor: 1.0
+  limb_mass_factor: 1.0
 
 # Evaluation environment configuration
 eval:

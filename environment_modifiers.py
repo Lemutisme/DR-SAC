@@ -16,6 +16,7 @@ from gymnasium.envs.box2d.lunar_lander import LunarLander
 from continuous_cartpole import ContinuousCartPoleEnv
 from gymnasium.envs.mujoco.half_cheetah_v5 import HalfCheetahEnv
 from gymnasium.envs.mujoco.reacher_v5 import ReacherEnv
+from gymnasium.envs.mujoco.ant_v5 import AntEnv
 from gymnasium.envs.registration import register
 
 logger = logging.getLogger(__name__)
@@ -352,6 +353,33 @@ register(
     entry_point="environment_modifiers:ParameterShiftedHalfCheetah",
     max_episode_steps=1000,
     kwargs={'back_stiff':1.0, 'front_stiff':1.0, 'back_damping':1.0, 'front_damping':1.0}
+)
+
+# Customized Ant
+class ParameterShiftedAnt(AntEnv):
+    def __init__(self, stiffness_factor=1.0, damping_factor=1.0, torso_mass_factor=1.0, limb_mass_factor=1.0):
+        super().__init__()
+        # adjust joint stiffness/damping for all joints
+        self.model.jnt_stiffness[:] *= stiffness_factor
+        self.model.dof_damping[:] *= damping_factor
+        # adjust torso and limb masses
+        torso_idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "torso")
+        self.model.body_mass[torso_idx] *= torso_mass_factor
+        for limb in ["front_left_leg", "front_left_foot", "front_right_leg", "front_right_foot",
+                     "back_left_leg", "back_left_foot", "back_right_leg", "back_right_foot"]:
+            try:
+                limb_idx = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, limb)
+                self.model.body_mass[limb_idx] *= limb_mass_factor
+            except mujoco.Error:
+                continue
+        logger.info("Parameter Shifted Ant: stiffness=%s, damping=%s, torso_mass=%s, limb_mass=%s",
+                    stiffness_factor, damping_factor, torso_mass_factor, limb_mass_factor)
+
+register(
+    id="ParameterShiftedAnt-v5",
+    entry_point="environment_modifiers:ParameterShiftedAnt",
+    max_episode_steps=1000,
+    kwargs={'stiffness_factor':1.0, 'damping_factor':1.0, 'torso_mass_factor':1.0, 'limb_mass_factor':1.0}
 )
 
 # Customized Reacher
@@ -747,6 +775,22 @@ def create_env_with_mods(env_name, env_config):
                                      joint0_damping=env_config.param_shift.joint0_damping,
                                      joint1_damping=env_config.param_shift.joint1_damping,
                                      act_ctrlrange=env_config.param_shift.act_ctrlrange)
+            else:
+                eval_env = gym.make(env_name)
+
+        elif env_name == "Ant-v5":
+            train_env = gym.make("ParameterShiftedAnt-v5",
+                                 stiffness_factor=env_config.param_shift.joint_stiff,
+                                 damping_factor=env_config.param_shift.joint_damping,
+                                 torso_mass_factor=env_config.param_shift.torso_mass_factor,
+                                 limb_mass_factor=env_config.param_shift.limb_mass_factor)
+            if env_config.eval.use_modified:
+                logger.info("Using modified environment for evaluation")
+                eval_env = gym.make("ParameterShiftedAnt-v5",
+                                    stiffness_factor=env_config.param_shift.joint_stiff,
+                                    damping_factor=env_config.param_shift.joint_damping,
+                                    torso_mass_factor=env_config.param_shift.torso_mass_factor,
+                                    limb_mass_factor=env_config.param_shift.limb_mass_factor)
             else:
                 eval_env = gym.make(env_name)
 

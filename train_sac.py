@@ -1,5 +1,6 @@
 from utils import evaluate_policy as evaluate_policy
 from utils import Reward_adapter
+from utils import set_reward_scale_override
 from environment_modifiers import register
 from continuous_cartpole import register
 from sac import SAC_continuous
@@ -92,6 +93,8 @@ def main(cfg: DictConfig):
     # Handle initial_alpha override
     if hasattr(opt, 'initial_alpha'):
         opt.alpha = opt.initial_alpha
+
+    set_reward_scale_override(opt.env_index, getattr(opt, "reward_scale", None))
 
     # 2. Create training and evaluation environments
     # Import environment modifier if environment modifications are enabled
@@ -245,8 +248,9 @@ def main(cfg: DictConfig):
                         next_state, reward, dw, tr, info = environment.step(action)
                         if opt.reward_adapt:
                             reward = Reward_adapter(reward, opt.env_index)
+                        real_done = dw
                         done = (dw or tr)
-                        agent.replay_buffer.add(state, action, reward, next_state, done)
+                        agent.replay_buffer.add(state, action, reward, next_state, real_done)
                         state = next_state
                         collected += 1
                         roll_bar.update(1)
@@ -291,12 +295,12 @@ def main(cfg: DictConfig):
                     agent.train(writer, total_steps)
                     total_steps += 1
                     pbar.update(1)
-                    
+
                     # Learning rate decay
                     agent.a_lr *= 1-1e-5
                     agent.c_lr *= 1-1e-5
                     agent.bc_weight *= 1-opt.bc_decay_rate
-                    
+
                     # Evaluate and log periodically
                     if total_steps % opt.eval_interval == 0:
                         # Temporarily close progress bars for evaluation
@@ -333,17 +337,21 @@ def main(cfg: DictConfig):
                             action = agent.select_action(state, deterministic=False)
 
                         # Step the environment
-                        next_state, reward, dw, tr, info = env.step(action)
+                        next_state, reward_raw, dw, tr, info = env.step(action)
                         
                         # Reward adaptation for online generation if enabled
                         if opt.reward_adapt:
-                             reward = Reward_adapter(reward, opt.env_index)
+                             reward = Reward_adapter(reward_raw, opt.env_index)
+                        else:
+                             reward = reward_raw
+
+                        real_done = dw
 
                         # Check for terminal state
                         done = (dw or tr)
 
                         # Store transition in replay buffer
-                        agent.replay_buffer.add(state, action, reward, next_state, done)
+                        agent.replay_buffer.add(state, action, reward, next_state, real_done)
 
                         # Move to next step
                         state = next_state
@@ -384,18 +392,22 @@ def main(cfg: DictConfig):
                             action = agent.select_action(state, deterministic=False)
 
                         # Step the environment
-                        next_state, reward, dw, tr, info = env.step(action)
-                        ep_reward += reward
+                        next_state, reward_raw, dw, tr, info = env.step(action)
+                        ep_reward += reward_raw
 
                         # Apply reward adapter if enabled
                         if opt.reward_adapt:
-                            reward = Reward_adapter(reward, opt.env_index)
+                            reward = Reward_adapter(reward_raw, opt.env_index)
+                        else:
+                            reward = reward_raw
+
+                        real_done = dw
 
                         # Check for terminal state
                         done = (dw or tr)
 
                         # Store transition in replay buffer
-                        agent.replay_buffer.add(state, action, reward, next_state, done)
+                        agent.replay_buffer.add(state, action, reward, next_state, real_done)
 
                         # Move to next step
                         state = next_state

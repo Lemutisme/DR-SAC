@@ -1,0 +1,22 @@
+# @package _global_
+
+env_name: Ant-v5
+env_index: 5
+reward_scale: 0.01
+
+# Ant-specific overrides
+max_train_steps: 1500000
+t_horizon: 4096
+k_epochs: 5
+net_width: 512
+a_lr: 0.0002
+c_lr: 0.0002
+entropy_coef: 0.0
+entropy_coef_decay: 1.0
+clip_rate: 0.2
+lambd: 0.95
+gamma: 0.99
+
+save_interval: 50000
+eval_interval: 10000
+

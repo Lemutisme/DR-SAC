@@ -4,17 +4,19 @@
 
 env_name: Ant-v5
 env_index: 5
-max_train_steps: 1000000 # 1000k for non-robust, 600k for robust
+max_train_steps: 3000000 # 1000k for non-robust, 600k for robust
 eval_interval: 5000
-reward_adapt: true
-n_critic: 10 # Changed from 20 to 2 for standard SAC
-net_layer: 4
+reward_adapt: false
+reward_scale: 0.01
+initial_alpha: 1.0
+n_critic: 2 # Changed from 20 to 2 for standard SAC
+net_layer: 1
 
 # Training hyperparameters
-a_lr: 0.00003 # 3e-4
-c_lr: 0.00001 # 1e-4
-g_lr: 0.00005 # 5e-5
-r_lr: 0.00005 # 5e-4
+a_lr: 0.0003 # 3e-4
+c_lr: 0.0003 # 1e-4
+g_lr: 0.0003 # 5e-5
+r_lr: 0.0003 # 5e-4
 # bc_pretrain_steps: 50000
 # bc_pretrain_log_interval: 5000
 # rollout_after_bc: true
@@ -22,8 +24,7 @@ r_lr: 0.00005 # 5e-4
 # rollout_epsilon: 0.05
 
 # Generative model parameters
-gen_steps: 100000 # 100k
+gen_steps: 10000 # 100k
 vae_latent_dim: 64
 
-adaptive_alpha: true # Changed from false to true
-initial_alpha: 0.1
+adaptive_alpha: true

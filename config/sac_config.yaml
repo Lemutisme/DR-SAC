@@ -30,7 +30,9 @@ save_model: true
 # Data path in offline mode
 data_path: None
 # Whether using V-critic
-use_v: true
+use_v: false
+# Optional per-environment reward scaling (None = default behavior)
+reward_scale: null
 
 # ------------  Generating settings  ------------ 
 # For epsilon-greedy

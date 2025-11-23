@@ -1,0 +1,51 @@
+defaults:
+  - _self_
+  - env/ppo: ant
+
+device: cuda
+mode: continual        # continual (online) or generate (data collection)
+write: false
+render: false
+load_model: false
+load_path: null
+eval_model: false
+save_model: true
+
+# Environment / noise options
+noise: false
+std: 0.0
+reward_scale: null
+
+# Algorithm switches
+distribution: Beta      # Beta, GS_ms, GS_m
+robust: false
+delta: 0.1
+
+# Training schedule
+seed: 42
+max_train_steps: 1000000
+save_interval: 10000
+eval_interval: 5000
+
+# PPO hyperparameters
+t_horizon: 2048
+k_epochs: 10
+clip_rate: 0.2
+gamma: 0.99
+lambd: 0.95
+entropy_coef: 0.0
+entropy_coef_decay: 1.0
+l2_reg: 0.0
+
+net_width: 256
+net_layer: 2
+a_lr: 0.0003
+c_lr: 0.0003
+a_optim_batch_size: 64
+c_optim_batch_size: 64
+
+epsilon: 0.1            # epsilon-greedy when generating data
+data_size: 1000000
+g_lr: 5e-5
+r_lr: 5e-4
+

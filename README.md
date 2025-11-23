@@ -95,3 +95,17 @@ python train_sac.py env/sac=ant \
 ```
 
 The BC stage trains the actor with pure supervised loss, then (optionally) the agent interacts with the live Gym environment to augment the replay buffer before standard SAC training resumes.
+
+### Pure Online Training
+
+To run SAC fully online (no offline data loading), switch the Hydra mode:
+
+```
+python train_sac.py env/sac=ant mode=continual bc_pretrain_steps=0 rollout_after_bc=false
+```
+
+`mode=continual` drives the built-in online interaction loop; the replay buffer fills on the fly, SAC updates happen every `update_every` steps, and evaluations/logging reuse the same Hydra output directories.
+
+### Reward Scaling Toggle
+
+Legacy experiments scaled Ant rewards by `0.01`. You can now control this via the `reward_scale` config entry (per-env overrides live in `config/env/**`). Set `reward_scale=1.0` to keep the raw MuJoCo rewards throughout training (useful when comparing against standard benchmarks), or any other factor if you want to reintroduce scaling.

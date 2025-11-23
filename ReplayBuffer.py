@@ -30,11 +30,19 @@ class ReplayBuffer(object):
         if self.size == self.max_size:
             print("Max size reached. The first tuple will be replaced.")
         self.s[self.ptr] = torch.from_numpy(s).to(self.device)
+        
+        # Update s_norm with the same value as s for now (no normalization in online add)
+        self.s_norm[self.ptr] = self.s[self.ptr].clone()
+        
         self.a[self.ptr] = torch.from_numpy(a).to(self.device) 
         if not isinstance(r, np.ndarray):
             r = np.array([r])
         self.r[self.ptr] = torch.from_numpy(r).to(self.device) 
         self.s_next[self.ptr] = torch.from_numpy(s_next).to(self.device)
+        
+        # Update s_next_norm with the same value as s_next
+        self.s_next_norm[self.ptr] = self.s_next[self.ptr].clone()
+        
         self.dw[self.ptr] = torch.tensor(dw, dtype=torch.bool)
 
         self.ptr = (self.ptr + 1) % self.max_size
