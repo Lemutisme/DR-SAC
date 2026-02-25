@@ -1,14 +1,20 @@
 # DR-SAC
 
-This repository contains a Distributionally Robust Soft Actor-Critic (SAC) implementation.
+This repository provides an implementation of Distributionally Robust Soft Actor-Critic (DR-SAC) (ICLR 2026).
+
+Paper links
+
+OpenReview: https://openreview.net/forum?id=a19MA0ksbc&referrer=%5BAuthor%20Console%5D(%2Fgroup%3Fid%3DICLR.cc%2F2026%2FConference%2FAuthors%23your-submissions)
+
+arXiv: https://arxiv.org/abs/2506.12622
 
 ## Setup
 
 Install required dependencies:
 
 ```
-conda env create -f requirement.yaml -n DRAC
-conda activate DRAC
+conda env create -f requirement.yaml -n DRSAC
+conda activate DRSAC
 ```
 
 ## Running the Code
@@ -19,7 +25,6 @@ Train with default configuration (Pendulum environment):
 
 ```
 python sac.py # SAC
-python ppo.py # PPO
 ```
 
 ### Changing Environments
@@ -132,3 +137,16 @@ You can create custom configuration groups for different experiments:
 1. Create a directory in `config/` (e.g., `config/experiment/`)
 2. Add YAML files with different configurations
 3. Run with: `python sac_hydra.py +experiment=my_config`
+
+### Citation
+
+```
+@inproceedings{
+  cui2026drsac,
+  title={{DR}-{SAC}: Distributionally Robust Soft Actor-Critic for Reinforcement Learning under Uncertainty},
+  author={Mingxuan Cui and Duo Zhou and Yuxuan Han and Grani A. Hanasusanto and Qiong Wang and Huan Zhang and Zhengyuan Zhou},
+  booktitle={The Fourteenth International Conference on Learning Representations},
+  year={2026},
+  url={https://openreview.net/forum?id=a19MA0ksbc}
+}
+```
