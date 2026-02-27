@@ -1,0 +1,6 @@
+# @package _global_
+
+env_name: Hopper-v5
+env_index: 5
+max_train_steps:  1000000  # Offline: 200k
+# max_train_steps: 400000 # Continual: 400k

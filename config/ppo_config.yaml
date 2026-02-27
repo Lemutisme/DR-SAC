@@ -3,26 +3,30 @@
 # Default configuration for PPO algorithm
 defaults:
   - _self_
-  - env: pendulum
+  - env/ppo: pendulum
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
 # General settings
 device: cuda
+mode: continual # continual, generate
 write: false
 debug_print: false
 render: false
 load_model: false
+load_path: None
 eval_model: false
 save_model: true
+epsilon: 0.5
 
 # Training settings
 seed: 0
 t_horizon: 2048
 distribution: Beta  # Should be one of Beta, GS_ms, GS_m
 max_train_steps: 1000000
-save_interval: 300000
+save_interval: 250000
 eval_interval: 5000
+data_size: 1000000
 
 # Algorithm hyperparameters
 gamma: 0.99

@@ -1,0 +1,9 @@
+# @package _global_
+
+# HalfCheetah environment config
+# Benchmark Reward: 6000, std: 150
+env_name: HalfCheetah-v5
+env_index: 4
+max_train_steps: 1000000 
+a_lr: 0.001
+c_lr: 0.001

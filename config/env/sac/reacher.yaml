@@ -1,0 +1,13 @@
+# @package _global_
+
+env_name: Reacher-v5
+env_index: 6
+max_train_steps: 50000
+n_critic: 5
+latent_dim: 10
+a_lr: 0.0003
+c_lr: 0.0003
+b_lr: 0.0005 # 5e-5
+g_lr: 0.00005 # 5e-4
+r_lr: 0.0005 # 5e-5
+

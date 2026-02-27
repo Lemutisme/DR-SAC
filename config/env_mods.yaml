@@ -14,7 +14,7 @@ observation_noise:
 action_perturb:
   enabled: false
   type: "noise"  # Options: drop, noise, delay, stuck
-  probability: 0.1  # Probability of perturbation
+  probability: 1.0  # Probability of perturbation
   level: 0.1  # Magnitude of perturbation
 
 # Reward shift configuration
@@ -37,17 +37,28 @@ param_shift:
   train_apply: false
   eval_apply: true
   # For Pendulum:
-  g_factor: 1.0  # Gravity factor
-  m_factor: 1.0  # Mass factor
-  l_factor: 1.0  # Length factor
+  gravity_factor: 1.0  # Gravity factor
+  mass_factor: 1.0  # Mass factor
+  length_factor: 1.0  # Length factor
   # For Cartpole:
-  len_factor: 1.0
+  # Share gravity_factor:1.0, length_factor:1.0, mass_factor:1.0
   force_mag_factor: 1.0
   # For LunarLander:
-  gravity_factor: 1.0  # Gravity factor
+  # Share gravity_factor:1.0
   wind_power: 0.0  # Constant wind force
-  turbulence_power: 0.0  # Random turbulence
+  turbulence_power: 1.5  # Random turbulence
   engine_factor: 1.0 # Main and side engine power factor
+  # For Halfcheetah
+  back_stiff: 1.0
+  front_stiff: 1.0
+  back_damping: 1.0
+  front_damping: 1.0
+  act_ctrlrange: 1.0
+  # For Reacher
+  joint0_stiff: 0.0
+  joint1_stiff: 0.0
+  joint0_damping: 1.0
+  joint1_damping: 1.0
 
 # Custom env configuration (for supported environments)
 custom:

@@ -1,9 +1,9 @@
 # @package _global_
 
-# Default configuration for SAC algorithm
+# Default configuration for d3rl algorithm
 defaults:
   - _self_
-  - env/sac: pendulum
+  - env/d3rl: pendulum
   - env_mods  # New include for environment modifications
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
@@ -11,6 +11,7 @@ defaults:
 # General settings
 device: cuda
 mode: offline # offline, continual, generate
+model: TD3 # TD3, SAC, DDPG
 write: false
 debug_print: false
 render: false
@@ -19,7 +20,6 @@ load_path: None
 eval_model: false
 save_model: true
 data_path: None
-soft_update_v: true
 
 # Generating settings(epsilon-greedy)
 epsilon: 0.1
@@ -27,38 +27,24 @@ epsilon: 0.1
 # Training settings
 seed: 42
 max_train_steps: 200000
-vae_steps: 0
 save_interval: 10000
 eval_interval: 1000
-data_size: 1000000 #1e6
-# Continual learning only
 update_every: 50
-update_freq: 1
-explore_episode: 50 
+learning_starts: 10000
 
 # Algorithm hyperparameters
 gamma: 0.99
 tau: 0.005
-hid_dim: 256
-latent_dim: 5
+net_arch: [256,256]
 net_layer: 1
-critic_ensemble: true
 n_critic: 2
-a_lr: 0.0005  # 5e-3
-c_lr: 0.0005 # 5e-4
-b_lr: 0.00005 # 5e-5
-g_lr: 0.0005 # 5e-4
-r_lr: 0.0005 # 5e-5
+a_lr: 0.0003 
+c_lr: 0.0003 
+l2_reg: 0 # 1e-3
 batch_size: 256 #256
-alpha: 0.12
-adaptive_alpha: true
 
 # Environment configurations
 reward_adapt: true
-reward_normalize: false
-robust: false
-robust_optimizer: functional # beta, functional, separate
-robust_update_after: 0
 noise: false  # Legacy noise setting - consider using env_mods instead
 type: gaussian
 adv: false
@@ -70,9 +56,9 @@ random_action_prob: 0.0
 # Hydra output directory
 hydra:
   run:
-    dir: ./outputs/SAC/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./outputs/${model}/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
-    dir: ./multirun/SAC/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ./multirun/${model}/${now:%Y-%m-%d}/${now:%H-%M-%S}
     subdir: ${hydra.job.num}
   job:
     name: ${env_name}_training

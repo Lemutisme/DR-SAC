@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 from pathlib import Path
+from utils import Reward_adapter
+#from hydra.utils import get_original_cwd
 
 class ReplayBuffer(object):
     def __init__(self, state_dim, action_dim, max_size, device):
@@ -17,8 +19,10 @@ class ReplayBuffer(object):
 
     def add(self, s, a, r, s_next, dw):
         self.s[self.ptr] = torch.from_numpy(s).to(self.device)
-        self.a[self.ptr] = torch.from_numpy(a).to(self.device) # Note that a is numpy.array
-        self.r[self.ptr] = r
+        self.a[self.ptr] = torch.from_numpy(a).to(self.device) 
+        if not isinstance(r, np.ndarray):
+            r = np.array([r])
+        self.r[self.ptr] = torch.from_numpy(r).to(self.device) 
         self.s_next[self.ptr] = torch.from_numpy(s_next).to(self.device)
         self.dw[self.ptr] = torch.tensor(dw, dtype=torch.bool)
 
@@ -40,24 +44,24 @@ class ReplayBuffer(object):
         np.save(f"{path}/r.npy", self.r[:self.size].cpu().numpy())
         np.save(f"{path}/s_next.npy", self.s_next[:self.size].cpu().numpy())
         np.save(f"{path}/dw.npy", self.dw[:self.size].cpu().numpy())
-        
-    def load_old(self, path=None, d4rl_dataset=False):
-        #self.size = int(np.load(f"{path}/size.npy")[0])
-        self.size = int(np.load(f"{path}/r.npy")[0]) 
-        print(f"{self.size} data loaded.")
-        self.s[:self.size,] = torch.from_numpy(np.load(f"{path}/s.npy")).to(self.device)
-        self.a[:self.size,] = torch.from_numpy(np.load(f"{path}/a.npy")).to(self.device)
-        self.r[:self.size,] = torch.from_numpy(np.load(f"{path}/r.npy")[1:]).reshape(-1,1).to(self.device)
-        #self.r[:self.size,] = torch.from_numpy(np.load(f"{path}/r.npy")).to(self.device)
-        self.s_next[:self.size,] = torch.from_numpy(np.load(f"{path}/s_next.npy")).to(self.device)
-        self.dw[:self.size,] = torch.from_numpy(np.load(f"{path}/dw.npy")).to(self.device)
             
-    def load(self, path=None, d4rl_dataset=False):
+    def load(self, path, reward_adapt, reward_normalize, EnvIdex):
+        path =  Path(path) / "dataset"
+        
         self.size = int(np.load(f"{path}/size.npy")[0])
         print(f"{self.size} data loaded.")
         self.s[:self.size,] = torch.from_numpy(np.load(f"{path}/s.npy")).to(self.device)
         self.a[:self.size,] = torch.from_numpy(np.load(f"{path}/a.npy")).to(self.device)
-        self.r[:self.size,] = torch.from_numpy(np.load(f"{path}/r.npy")).to(self.device)
+        r_cpu = torch.from_numpy(np.load(f"{path}/r.npy")).reshape((-1,1))
+        if reward_adapt:
+            print(f"Before adaptation: Max: {r_cpu.max():.4f}, Min: {r_cpu.min():.4f}, Mean: {r_cpu.mean():.4f}.")
+            r_cpu.apply_(lambda r: Reward_adapter(r, EnvIdex))
+            print(f"After adaptation: Max: {r_cpu.max():.4f}, Min: {r_cpu.min():.4f}, Mean: {r_cpu.mean():.4f}.")
+        elif reward_normalize:
+            print("Normalize reward to [0,1]")
+            r_max, r_min = np.max(r_cpu), np.min(r_cpu)
+            r_cpu = (r_cpu - r_min) / (r_max - r_min)
+        self.r[:self.size,] = r_cpu.to(self.device)
         self.s_next[:self.size,] = torch.from_numpy(np.load(f"{path}/s_next.npy")).to(self.device)
         self.dw[:self.size,] = torch.from_numpy(np.load(f"{path}/dw.npy")).to(self.device)
             

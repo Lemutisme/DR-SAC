@@ -1,0 +1,106 @@
+# @package _global_
+
+# Default configuration for FQI algorithm
+defaults:
+  - _self_
+  - env/fqi: pendulum
+  - env_mods  # New include for environment modifications
+  - override hydra/job_logging: default
+  - override hydra/hydra_logging: default
+
+# General settings
+device: cuda
+mode: offline # offline only
+write: false
+debug_print: false
+render: false
+load_model: false
+load_path: None
+eval_model: false
+save_model: true
+data_path: None
+
+# Training settings
+seed: 42
+# How often (time steps) we evaluate
+eval_freq: 1e4
+eval_interval: 2e3
+save_interval: 2e3
+# max time steps to train FQI
+max_trn_steps: 5e5
+max_vae_trn_step: 2e5
+data_size: 1000000
+# use d4rl dataset
+d4rl: False
+d4rl_v2: False
+d4rl_expert: False
+# use mixed dataset
+mixed: False
+# extra comment
+comment: ''
+# save video
+video: False
+
+# mini batch size for networks
+batch_size: 1000 
+# discount factor
+gamma: 0.99 
+# target network update rate
+tau: 0.005
+# weighting for clipped double Q-learning in BCQ
+lmbda: 0.75
+# max perturbation hyper-parameter for BCQ
+phi: 0.1
+# epsilon in Adam*
+adam_eps: 1e-6
+# Adam stepsize*
+adam_lr: 1e-3
+# learning rate of actor
+actor_lr: 1e-3
+critic_lr: 1e-3
+# number of sampling action for policy (in backup)
+n_action: 100
+# number of sampling action for policy (in execution)
+n_action_execute: 100
+
+# BCQ-PQL parameter
+# "QL": q learning (Q-max) back up, "AC": actor-critic backup
+backup: 'QL'
+# noise of next action in QL
+ql_noise: 0.15
+# if true, use percentile for b (beta is the b in paper)
+automatic_beta: False
+# use x-Percentile as the value of b
+beta_percentile: 2.0 
+# hardcoded b, only effective when automatic_beta = False
+beta: -0.4
+# min value of the environment
+# empirically set it to be the min of 1000 random rollout.
+vmin: 0
+
+# Environment configurations
+reward_adapt: true
+reward_normalize: false
+robust: false
+rho: 0.5
+noise: false  # Legacy noise setting - consider using env_mods instead
+type: gaussian
+adv: false
+spread: 0.0      # Legacy std setting - consider using env_mods instead
+scale: 1.0    # Legacy scale setting - consider using env_mods instead
+random_action_prob: 0.0
+
+# Hydra output directory
+hydra:
+  run:
+    dir: ./outputs/FQI/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ./multirun/FQI/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  job:
+    name: ${env_name}_training
+    chdir: true  # Change to the output directory
+
+
+
+

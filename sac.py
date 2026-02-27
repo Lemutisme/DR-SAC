@@ -1,31 +1,20 @@
-from utils import evaluate_policy_SAC as evaluate_policy
-from utils import Action_adapter_symm as Action_adapter
-from utils import Action_adapter_symm_reverse as Action_adapter_reverse
-from utils import build_net, Reward_adapter
-from environment_modifiers import register
-from continuous_cartpole import register
+from utils import build_net
 from ReplayBuffer import ReplayBuffer
 
 import copy
 import math
-import hydra
-import logging
 
-import random
 import numpy as np
-import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-from tqdm import tqdm
 from pathlib import Path
 from scipy.special import logsumexp
 from scipy.optimize import minimize_scalar
-from omegaconf import DictConfig, OmegaConf
-# import d3rlpy
-# import d4rl
+from hydra.utils import get_original_cwd
+
 
 ######################################################
 # NOTE: 
@@ -38,16 +27,26 @@ from omegaconf import DictConfig, OmegaConf
 ######################################################
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, hid_shape, hid_layers, hidden_activation=nn.ReLU, output_activation=nn.ReLU):
+    def __init__(self, state_dim, action_dim, max_action, hid_dim, hid_layers, hidden_activation=nn.ReLU, output_activation=nn.ReLU):
         super(Actor, self).__init__()
-        layers = [state_dim] + hid_shape * hid_layers
+        layers = [state_dim] + [hid_dim, hid_dim] * hid_layers
 
         self.a_net = build_net(layers, hidden_activation, output_activation)
         self.mu_layer = nn.Linear(layers[-1], action_dim)
         self.log_std_layer = nn.Linear(layers[-1], action_dim)
 
         self.LOG_STD_MAX = 2
-        self.LOG_STD_MIN = -20
+        self.LOG_STD_MIN = -5
+        self.max_action = max_action
+        
+        # init as in the EDAC paper
+        for layer in self.a_net[0:-1:2]:
+            torch.nn.init.constant_(layer.bias, 0.1)
+            
+        torch.nn.init.uniform_(self.mu_layer.weight, -1e-3, 1e-3)
+        torch.nn.init.uniform_(self.mu_layer.bias, -1e-3, 1e-3)
+        torch.nn.init.uniform_(self.log_std_layer.weight, -1e-3, 1e-3)
+        torch.nn.init.uniform_(self.log_std_layer.bias, -1e-3, 1e-3)
 
     def forward(self, state, deterministic, with_logprob):
         '''Network with Enforcing Action Bounds'''
@@ -69,25 +68,83 @@ class Actor(nn.Module):
         else:
             logp_pi_a = None
 
-        return a, logp_pi_a
+        return a * self.max_action, logp_pi_a
 
 class V_Critic(nn.Module):
-    def __init__(self, state_dim, hid_shape, hid_layers):
+    def __init__(self, state_dim, hid_dim, hid_layers):
         super(V_Critic, self).__init__()
         self.state_dim = state_dim
 
-        layers = [state_dim] + hid_shape * hid_layers + [1]
+        layers = [state_dim] + [hid_dim, hid_dim] * hid_layers + [1]
         self.V = build_net(layers, nn.ReLU, nn.Identity)
 
     def forward(self, state):
         output = self.V(state)
         return output
+    
+class VectorizedLinear(nn.Module):
+    def __init__(self, in_features: int, out_features: int, ensemble_size: int):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.ensemble_size = ensemble_size
 
+        self.weight = nn.Parameter(torch.empty(ensemble_size, in_features, out_features))
+        self.bias = nn.Parameter(torch.empty(ensemble_size, 1, out_features))
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # default pytorch init for nn.Linear module
+        for layer in range(self.ensemble_size):
+            nn.init.kaiming_uniform_(self.weight[layer], a=math.sqrt(5))
+
+        fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight[0])
+        bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+        nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # input: [ensemble_size, batch_size, input_size]
+        # weight: [ensemble_size, input_size, out_size]
+        # out: [ensemble_size, batch_size, out_size]
+        return x @ self.weight + self.bias
+
+class VectorizedCritic(nn.Module):
+    def __init__(
+        self, state_dim: int, action_dim: int, hidden_dim: int, hid_layers: int, num_critics: int,
+    ):
+        super().__init__()
+        layers = [VectorizedLinear(state_dim + action_dim, hidden_dim, num_critics),
+                  nn.ReLU()]
+        for _ in range(hid_layers):
+            layers.extend([VectorizedLinear(hidden_dim, hidden_dim, num_critics), 
+                           nn.ReLU()])
+        layers.append( VectorizedLinear(hidden_dim, 1, num_critics))
+        self.critic = nn.Sequential(*layers)
+        # init as in the EDAC paper
+        for layer in self.critic[::2]:
+            torch.nn.init.constant_(layer.bias, 0.1)
+
+        torch.nn.init.uniform_(self.critic[-1].weight, -3e-3, 3e-3)
+        torch.nn.init.uniform_(self.critic[-1].bias, -3e-3, 3e-3)
+
+        self.num_critics = num_critics
+
+    def forward(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        # [batch_size, state_dim + action_dim]
+        state_action = torch.cat([state, action], dim=-1)
+        # [num_critics, batch_size, state_dim + action_dim]
+        state_action = state_action.unsqueeze(0).repeat_interleave(
+            self.num_critics, dim=0
+        )
+        # [num_critics, batch_size]
+        q_values = self.critic(state_action).squeeze(-1)
+        return q_values
 
 class Double_Q_Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hid_shape, hid_layers):
+    def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
         super(Double_Q_Critic, self).__init__()
-        layers = [state_dim + action_dim] + hid_shape * hid_layers + [1]
+        layers = [state_dim + action_dim] + [hid_dim, hid_dim] * hid_layers + [1]
 
         self.Q_1 = build_net(layers, nn.ReLU, nn.Identity)
         self.Q_2 = build_net(layers, nn.ReLU, nn.Identity)   
@@ -98,41 +155,20 @@ class Double_Q_Critic(nn.Module):
         q2 = self.Q_2(sa)            
         return q1, q2
 
-# class Q_Ensemble_Critic(nn.Module):
-#     def __init__(self, state_dim, action_dim, hid_shape, hid_layers, num_critics=5):
-#         super(Q_Ensemble_Critic, self).__init__()
-#         layers = [state_dim + action_dim] + hid_shape * hid_layers + [1]
-
-#         self.Q_list = nn.ModuleList([ build_net(layers, nn.ReLU, nn.Identity) for _ in range(num_critics) ])
-
-#     def forward(self, state, action):
-#         sa = torch.cat([state, action], dim=1)
-#         # q1 = self.Q_1(sa)
-#         # q2 = self.Q_2(sa)            
-#         return [Q(sa) for Q in self.Q_list]
-    
-#     def min_forward(self, state, action):
-#         Q_list = self.forward(state, action)
-#         return torch.min(torch.stack(Q_list, dim=0), dim=0)[0] 
-        
-
 class TransitionVAE(nn.Module):
-    def __init__(self, state_dim, action_dim, out_dim, hidden_dim=64, hidden_layers=1, latent_dim=0):
+    def __init__(self, state_dim, action_dim, hidden_dim, hidden_layers, latent_dim):
         super(TransitionVAE, self).__init__()
-        if latent_dim > 0:
-            self.latent_dim = latent_dim
-        else:
-            self.latent_dim = (state_dim * 2 + action_dim + out_dim) // 2
-
         # Encoder layers
-        e_layers = [state_dim * 2 + action_dim] + hidden_dim * hidden_layers
+        e_layers = [state_dim * 2 + action_dim] + [hidden_dim, hidden_dim] * hidden_layers
         self.encoder = build_net(e_layers, nn.ReLU, nn.Identity)
-        self.e_mu = nn.Linear(e_layers[-1], self.latent_dim)
-        self.e_logvar = nn.Linear(e_layers[-1], self.latent_dim)
+        self.e_mu = nn.Linear(e_layers[-1], latent_dim)
+        self.e_logvar = nn.Linear(e_layers[-1], latent_dim)
 
-        # Decoder layers
-        d_layers = [state_dim + action_dim + self.latent_dim] + hidden_dim * hidden_layers + [out_dim]
+        # Decoder layers: out_dim = state_dim
+        d_layers = [state_dim + action_dim + latent_dim] + [hidden_dim, hidden_dim] * hidden_layers + [state_dim]
         self.decoder = build_net(d_layers, nn.ReLU, nn.Identity)
+        
+        self.latent_dim = latent_dim
 
     def encode(self, s, a, s_next):
         x = torch.cat([s, a, s_next], dim=1)
@@ -172,9 +208,9 @@ class ExpActivation(nn.Module):
         return torch.exp(x)   
 
 class dual(nn.Module):
-    def __init__(self, state_dim, action_dim, hid_shape, hid_layers):
+    def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
         super(dual, self).__init__()  
-        layers = [state_dim + action_dim] + hid_shape * hid_layers + [1]
+        layers = [state_dim + action_dim] + [hid_dim, hid_dim] * hid_layers + [1]
 
         self.G = build_net(layers, nn.ReLU, ExpActivation)
 
@@ -182,107 +218,54 @@ class dual(nn.Module):
         sa = torch.cat([state, action], dim=1)          
         return self.G(sa)
 
-# class ReplayBuffer(object):
-#     def __init__(self, state_dim, action_dim, max_size, device):
-#         self.max_size = max_size
-#         self.device = device
-#         self.ptr = 0
-#         self.size = 0
-
-#         self.s = torch.zeros((max_size, state_dim), dtype=torch.float, device=self.device)
-#         self.a = torch.zeros((max_size, action_dim), dtype=torch.float, device=self.device)
-#         self.r = torch.zeros((max_size, 1), dtype=torch.float, device=self.device)
-#         self.s_next = torch.zeros((max_size, state_dim), dtype=torch.float, device=self.device)
-#         self.dw = torch.zeros((max_size, 1), dtype=torch.bool, device=self.device)
-
-#     def add(self, s, a, r, s_next, dw):
-#         self.s[self.ptr] = torch.from_numpy(s).to(self.device)
-#         self.a[self.ptr] = torch.from_numpy(a).to(self.device) # Note that a is numpy.array
-#         self.r[self.ptr] = r
-#         self.s_next[self.ptr] = torch.from_numpy(s_next).to(self.device)
-#         self.dw[self.ptr] = dw
-
-#         self.ptr = (self.ptr + 1) % self.max_size
-#         self.size = min(self.size + 1, self.max_size)
-
-#     def sample(self, batch_size):
-#         ind = torch.randint(0, self.size, device=self.device, size=(batch_size,))
-#         return self.s[ind], self.a[ind], self.r[ind], self.s_next[ind], self.dw[ind]
-    
-#     def save(self, path=None): 
-#         if not path:
-#             path = Path(f"./dataset")
-#         path.mkdir(parents=True, exist_ok=True)
-            
-#         # Store size in the front of reward buffer
-#         r_np = self.r[:self.size].cpu().numpy()
-#         r_with_size = np.insert(r_np, 0, self.size)
-#         np.save(f"{path}/r.npy", r_with_size)
-        
-#         np.save(f"{path}/s.npy", self.s[:self.size].cpu().numpy())
-#         np.save(f"{path}/a.npy", self.a[:self.size].cpu().numpy())
-#         np.save(f"{path}/s_next.npy", self.s_next[:self.size].cpu().numpy())
-#         np.save(f"{path}/dw.npy", self.dw[:self.size].cpu().numpy())
-        
-#     def load(self, path=None, d4rl_dataset=False):
-#         if d4rl_dataset:  
-#             self.size = int(d4rl_dataset.rewards.shape[0])
-#             self.s[:self.size,] = torch.from_numpy(d4rl_dataset.observations).to(self.device)
-#             self.a[:self.size,] = torch.from_numpy(d4rl_dataset.actions).to(self.device)
-#             self.r[:self.size,] = torch.from_numpy(d4rl_dataset.rewards).to(self.device)
-#             self.s_next[:self.size,] = torch.from_numpy(d4rl_dataset.next_observations).to(self.device)
-#             self.dw[:self.size,] = torch.from_numpy(d4rl_dataset.terminals).to(self.device)
-#         else:
-#             self.size = int(np.load(f"{path}/r.npy")[0]) 
-#             self.s[:self.size,] = torch.from_numpy(np.load(f"{path}/s.npy")).to(self.device)
-#             self.a[:self.size,] = torch.from_numpy(np.load(f"{path}/a.npy")).to(self.device)
-#             self.r[:self.size,] = torch.from_numpy(np.load(f"{path}/r.npy")[1:]).reshape(-1,1).to(self.device)
-#             self.s_next[:self.size,] = torch.from_numpy(np.load(f"{path}/s_next.npy")).to(self.device)
-#             self.dw[:self.size,] = torch.from_numpy(np.load(f"{path}/dw.npy")).to(self.device)
-
-
 class SAC_continuous():
     def __init__(self, **kwargs):
         # Init hyperparameters for agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
         self.__dict__.update(kwargs)
+        
+        self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, max_size=self.data_size, device=self.device)
 
-        self.actor = Actor(self.state_dim, self.action_dim, hid_shape=self.net_arch, hid_layers=self.net_layer).to(self.device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.a_lr)
+        self.actor = Actor(self.state_dim, self.action_dim, self.max_action, self.hid_dim, self.net_layer).to(self.device)
+        self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr=self.a_lr)
 
-        self.v_critic = V_Critic(self.state_dim, hid_shape=self.net_arch, hid_layers=self.net_layer).to(self.device)
-        self.v_critic_optimizer = torch.optim.Adam(self.v_critic.parameters(), lr=self.c_lr)
-        self.v_critic_target = copy.deepcopy(self.v_critic)
-        # Freeze target networks with respect to optimizers (only update via polyak averaging)
-        for p in self.v_critic_target.parameters():
-            p.requires_grad = False
+        self.v_critic = V_Critic(self.state_dim, self.hid_dim, self.net_layer).to(self.device)
+        self.v_critic_optimizer = torch.optim.AdamW(self.v_critic.parameters(), lr=self.c_lr)
+        if self.soft_update_v:
+            self.v_critic_target = copy.deepcopy(self.v_critic)
+            # Freeze target networks with respect to optimizers (only update via polyak averaging)
+            for p in self.v_critic_target.parameters():
+                p.requires_grad = False
 
-        self.q_critic = Double_Q_Critic(self.state_dim, self.action_dim, 
-                                        hid_shape=self.net_arch, 
-                                        hid_layers=self.net_layer).to(self.device)
-        self.q_critic_optimizer = torch.optim.Adam(self.q_critic.parameters(), lr=self.c_lr)
-
+        if self.critic_ensemble:
+            self.q_critic = VectorizedCritic(self.state_dim, self.action_dim, self.hid_dim, self.net_layer, self.n_critic).to(self.device)
+        else:
+            self.q_critic = Double_Q_Critic(self.state_dim, self.action_dim, hid_dim=self.hid_dim, hid_layers=self.net_layer).to(self.device)
+        self.q_critic_optimizer = torch.optim.AdamW(self.q_critic.parameters(), lr=self.c_lr)    
+         
+        self.q_critic_target = copy.deepcopy(self.q_critic)
+        for p in self.q_critic_target.parameters():
+            p.requires_grad = False     
+            
         if self.robust:    
             print('This is a robust policy.')
-            self.transition = TransitionVAE(self.state_dim, self.action_dim, self.state_dim, 
-                                            hidden_dim=self.net_arch, 
-                                            hidden_layers=self.net_layer, 
-                                            latent_dim=5).to(self.device)
-            self.trans_optimizer = torch.optim.Adam(self.transition.parameters(), lr=self.r_lr)
-
-            self.log_beta = nn.Parameter(torch.ones((self.batch_size,1), requires_grad=True, device=self.device) * 1.0)
-            self.beta_optimizer = torch.optim.Adam([self.log_beta], lr=self.b_lr)
-
-            self.g = dual(self.state_dim, self.action_dim, self.net_arch, self.net_layer).to(self.device)
-            self.g_optimizer = torch.optim.Adam(self.g.parameters(), lr=self.g_lr)
-
-        self.replay_buffer = ReplayBuffer(self.state_dim, self.action_dim, max_size=int(1e6), device=self.device)
+            self.transition = TransitionVAE(self.state_dim, self.action_dim,
+                                            hidden_dim=self.hid_dim, 
+                                            hidden_layers=self.net_layer,
+                                            latent_dim=self.latent_dim).to(self.device)
+            self.trans_optimizer = torch.optim.AdamW(self.transition.parameters(), lr=self.r_lr)
+            if self.robust_optimizer == 'beta':
+                self.log_beta = nn.Parameter(torch.ones((self.batch_size,1), requires_grad=True, device=self.device) * 1.0)
+                self.beta_optimizer = torch.optim.AdamW([self.log_beta], lr=self.b_lr)
+            elif self.robust_optimizer == 'functional':
+                self.g = dual(self.state_dim, self.action_dim, self.hid_dim, self.net_layer).to(self.device)
+                self.g_optimizer = torch.optim.AdamW(self.g.parameters(), lr=self.g_lr)
 
         if self.adaptive_alpha:
             # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
             self.target_entropy = torch.tensor(-self.action_dim, dtype=float, requires_grad=True, device=self.device)
             # We learn log_alpha instead of alpha to ensure alpha>0
-            self.log_alpha = torch.tensor(np.log(self.alpha), dtype=float, requires_grad=True, device=self.device)
-            self.alpha_optim = torch.optim.Adam([self.log_alpha], lr=self.c_lr)
+            self.log_alpha = torch.tensor(math.log(self.alpha), dtype=float, requires_grad=True, device=self.device)
+            self.alpha_optim = torch.optim.AdamW([self.log_alpha], lr=self.c_lr)      
 
     def select_action(self, state, deterministic):
         # only used when interact with the env
@@ -291,10 +274,10 @@ class SAC_continuous():
             a, _ = self.actor(state, deterministic, with_logprob=False)
         return a.cpu().numpy()[0]
 
-    def vae_loss(self, s_next, s_next_recon, mu, logvar):
+    def vae_loss(self, s_next, s_next_recon, mu, logvar, beta=1):
         recon_loss = F.mse_loss(s_next_recon, s_next, reduction='sum')
-        kl_div = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        return recon_loss + kl_div
+        kl_div = -0.5 * (1 + logvar - mu.pow(2) - logvar.exp()).sum()
+        return recon_loss, beta * kl_div
 
     def dual_func_g(self, s, a, s_next):
         size = s_next.shape[1]
@@ -311,27 +294,61 @@ class SAC_continuous():
         size = s_next.shape[-1]
         v_next = self.v_critic_target(s_next)
         v_next = v_next.cpu().numpy()
-        return - beta * (logsumexp(-v_next/beta) - math.log(size)) - beta * self.delta           
-
-    def train(self, writer, step):
-        s, a_env, r, s_next, dw = self.replay_buffer.sample(self.batch_size)
-        a = Action_adapter_reverse(a_env, self.max_action)
-        if self.reward_adapt:
-            r = Reward_adapter(r, self.env_index)
-        debug_print = self.debug_print and (step % 1000 == 0)
-
-        #----------------------------- ↓↓↓↓↓ Update R Net ↓↓↓↓↓ ------------------------------#
-        if self.robust:
-            s_next_recon, mu, logvar = self.transition(s, a, s_next)
-            tr_loss = self.vae_loss(s_next, s_next_recon, mu, logvar)
+        return - beta * (logsumexp(-v_next/beta) - math.log(size)) - beta * self.delta     
+    
+    def tran_vae_train(self, debug_print, writer, step, iterations, s=None, a=None, s_next=None):
+        for _ in range(iterations):
+            if s is None:
+                s, a, r, s_next, dw = self.replay_buffer.sample(self.batch_size)
+            s_next_recon, mu, std = self.transition(s, a, s_next)
+            recon_loss, kl_div = self.vae_loss(s_next, s_next_recon, mu, std)
+            tr_loss = recon_loss + kl_div
             self.trans_optimizer.zero_grad()
             tr_loss.backward()
             self.trans_optimizer.step()
             if debug_print:
-                print(f"tr_loss: {tr_loss.item()}")
-            if writer:
-                writer.add_scalar('tr_loss', tr_loss, global_step=step)
+                print(f"recon_loss: {recon_loss.item()}, kl_div = {kl_div}.")
+        if writer:
+            writer.add_scalar('tr_loss', tr_loss, global_step=step)
+        return tr_loss.item()
+        
+    def train(self, writer, step):
+        s, a, r, s_next, dw = self.replay_buffer.sample(self.batch_size)
+        debug_print = self.debug_print and (step % 1000 == 0)
+                
+        #----------------------------- ↓↓↓↓↓ Update V Net ↓↓↓↓↓ ------------------------------#
+        for params in self.v_critic.parameters():
+            params.requires_grad = True
+            
+        policy_a , log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
+        if self.critic_ensemble:
+            Q_list = self.q_critic_target(s, policy_a)
+            assert Q_list.shape[0] == self.n_critic
+            Q_min = Q_list.min(0).values.unsqueeze(-1)
+        else:
+            current_Q1, current_Q2 = self.q_critic(s, policy_a)
+        ### V(s) = E_pi(Q(s,a) - α * logπ(a|s)) ###
+        target_V = (Q_min - self.alpha * log_pi_a).detach()
 
+        current_V = self.v_critic(s)
+        v_loss = F.mse_loss(current_V, target_V)
+
+        self.v_critic_optimizer.zero_grad()
+        v_loss.backward()
+        self.v_critic_optimizer.step()
+        if debug_print:
+            print(f"v_loss: {v_loss.item()}")
+        if writer:
+            writer.add_scalar('v_loss', v_loss, global_step=step)        
+                
+        for params in self.v_critic.parameters():
+            params.requires_grad = False     
+        
+        #----------------------------- ↓↓↓↓↓ Update R Net ↓↓↓↓↓ ------------------------------#        
+        if self.robust:    
+            self.tran_vae_train(debug_print, writer, step, 1, s, a, s_next)
+            
+        #----------------------------- ↓↓↓↓↓ Robust Update ↓↓↓↓↓ ------------------------------#         
             with torch.no_grad():
                 s_next_sample = self.transition.sample(s, a, 200)
 
@@ -345,7 +362,7 @@ class SAC_continuous():
                     opt_loss = -self.dual_func_beta(s_next_sample, self.beta)
                     self.beta_optimizer.zero_grad()
                     opt_loss.mean().backward()
-                    if self.debug_print:
+                    if debug_print:
                         print(opt_loss.sum().item())
                     self.beta_optimizer.step() 
 
@@ -355,18 +372,14 @@ class SAC_continuous():
             #############################################################		
             ### option2: optimize w.r.t functional g ###
             elif self.robust_optimizer == 'functional':
-                old_loss = 1e4
-                for _ in range(5):
+                for _ in range(10):
                     opt_loss = -self.dual_func_g(s, a, s_next_sample)
-                    # Stopping Criteria
-                    if abs(opt_loss.mean().item() - old_loss) < 1e-3 * old_loss:
-                        break
-                    old_loss = opt_loss.mean().item()
                     
                     self.g_optimizer.zero_grad()
                     opt_loss.mean().backward()
                     self.g_optimizer.step() 
-                    if self.debug_print:
+        
+                    if debug_print:
                         print(opt_loss.mean().item())
 
                 V_next_opt = self.dual_func_g(s, a, s_next_sample) 
@@ -385,102 +398,57 @@ class SAC_continuous():
             ############################################################		
 
             else:
-                raise NotImplementedError
+                raise NotImplementedError  
 
         #----------------------------- ↓↓↓↓↓ Update Q Net ↓↓↓↓↓ ------------------------------#
         for params in self.q_critic.parameters():
             params.requires_grad = True
 
         with torch.no_grad():
-            V_next = self.v_critic_target(s_next)
+            V_next = self.v_critic_target(s_next) if self.soft_update_v else self.v_critic(s_next)
             #############################################################		
             ### Q(s, a) = r + γ * (1 - done) * V(s') ###
             if self.robust:
                 target_Q = r + (~dw) * self.gamma * V_next_opt
-                if self.debug_print:
+                if debug_print:
                     print(((V_next_opt - V_next) / V_next).norm().item()) # difference of robust update
-                    # print(((V_next_opt - V_next_opt_acc) / V_next_opt).norm().item()) # difference of reparate and joint optimize
             else:
                 target_Q = r + (~dw) * self.gamma * V_next
             #############################################################
 
-        # Get current Q estimates
-        current_Q1, current_Q2 = self.q_critic(s, a)
-        # current_Q_list = self.q_critic.forward(s, a)
-
-        # JQ(θ)
-        q_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q) 
-        # q_loss = sum([F.mse_loss(current_Q, target_Q) for current_Q in current_Q_list])
-
-        for name,param in self.q_critic.named_parameters():
-            if 'weight' in name:
-                q_loss += param.pow(2).sum() * self.l2_reg
+        # Get current Q estimates and JQ(θ)
+        if self.critic_ensemble:        
+            current_Q = self.q_critic(s, a)
+            # [ensemble_size, batch_size] - [1, batch_size]
+            q_loss = ((current_Q - target_Q.view(1, -1)) ** 2).mean(dim=1).sum(dim=0)
+        else:
+            current_Q1, current_Q2 = self.q_critic(s, a)
+            q_loss = F.mse_loss(current_Q1, target_Q) + F.mse_loss(current_Q2, target_Q) 
 
         self.q_critic_optimizer.zero_grad()
         q_loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.q_critic.parameters(), 10.0)
-        if debug_print:
-            print(max([param.grad.abs().mean().item() for _, param in self.q_critic.named_parameters()]))
         self.q_critic_optimizer.step()
         if debug_print:
             print(f"q_loss: {q_loss.item()}")
         if writer:
             writer.add_scalar('q_loss', q_loss, global_step=step)
-
-        #----------------------------- ↓↓↓↓↓ Update V Net ↓↓↓↓↓ ------------------------------#
+            
         for params in self.q_critic.parameters():
             params.requires_grad = False
-        for params in self.v_critic.parameters():
-            params.requires_grad = True
-
-        a, log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
-        current_Q1, current_Q2 = self.q_critic(s, a)
-        Q = torch.min(current_Q1, current_Q2)
-        # Q = self.q_critic.min_forward(s,a)
-        ### V(s) = E_pi(Q(s,a) - α * logπ(a|s)) ###
-        target_V = (Q - self.alpha * log_pi_a).detach()
-
-        current_V = self.v_critic(s)
-        v_loss = F.mse_loss(current_V, target_V)
-
-        for name,param in self.v_critic.named_parameters():
-            if 'weight' in name:
-                v_loss += param.pow(2).sum() * self.l2_reg
-
-        self.v_critic_optimizer.zero_grad()
-        v_loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.v_critic.parameters(), 10.0)
-        if debug_print:
-            print(max([param.grad.abs().mean().item() for _, param in self.v_critic.named_parameters()]))
-        self.v_critic_optimizer.step()
-        if debug_print:
-            print(f"v_loss: {v_loss.item()}")
-        if writer:
-            writer.add_scalar('v_loss', v_loss, global_step=step)
 
         #----------------------------- ↓↓↓↓↓ Update Actor Net ↓↓↓↓↓ ------------------------------#
-        # Freeze critic so you don't waste computational effort computing gradients for them when update actor
-        for params in self.v_critic.parameters():
-            params.requires_grad = False
-
-        # a, log_pi_a = self.actor(s, deterministic=False, with_logprob=True)
-        # current_Q1, current_Q2 = self.q_critic(s, a)
-        # Q = torch.min(current_Q1, current_Q2)
-
         # Entropy Regularization
         # Note that the entropy term is not included in the loss function
         #########################################
         ### Jπ(θ) = E[α * logπ(a|s) - Q(s,a)] ###
-        a_loss = (self.alpha * log_pi_a - Q).mean()
+        a_loss = (self.alpha * log_pi_a - Q_min).mean()
         #########################################
+            
         self.actor_optimizer.zero_grad()
         a_loss.backward()
-        # torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 10.0)
-        if debug_print:
-            print(max([param.grad.abs().mean().item() for _, param in self.actor.named_parameters()]))
         self.actor_optimizer.step()
         if debug_print:
-            print(f"a_loss: {a_loss.item()}\n")
+            print(f"a_loss: {a_loss.item()}")
         if writer:
             writer.add_scalar('a_loss', a_loss, global_step=step)
 
@@ -492,466 +460,31 @@ class SAC_continuous():
             alpha_loss.backward()
             self.alpha_optim.step()
             self.alpha = self.log_alpha.exp() 
+            if debug_print:
+                print(f"alpha = {self.alpha.item()}\n")
 
         #----------------------------- ↓↓↓↓↓ Update Target Net ↓↓↓↓↓ ------------------------------#
-        for param, target_param in zip(self.v_critic.parameters(), self.v_critic_target.parameters()):
+        for param, target_param in zip(self.q_critic.parameters(), self.q_critic_target.parameters()):
             target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
+        if self.soft_update_v:
+            for param, target_param in zip(self.v_critic.parameters(), self.v_critic_target.parameters()):
+                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
     def save(self, EnvName):
-        # params = f"{self.std}_{self.robust}"
         model_dir = Path(f"./models/SAC_model/{EnvName}")
         model_dir.mkdir(parents=True, exist_ok=True)
 
         torch.save(self.actor.state_dict(), model_dir / f"actor.pth")
         torch.save(self.q_critic.state_dict(), model_dir / f"q.pth")
         torch.save(self.v_critic.state_dict(), model_dir / f"v.pth")
+        if self.robust:
+            torch.save(self.transition.state_dict(), model_dir / f"tran.pth")
 
     def load(self, EnvName, load_path):
-        model_dir = Path(f"{load_path}/models/SAC_model/{EnvName}")
+        model_dir = Path(get_original_cwd())/f"{load_path}/models/SAC_model/{EnvName}"
 
         self.actor.load_state_dict(torch.load(model_dir / f"actor.pth", map_location=self.device, weights_only=True))
         self.q_critic.load_state_dict(torch.load(model_dir / f"q.pth", map_location=self.device, weights_only=True))
         self.v_critic.load_state_dict(torch.load(model_dir / f"v.pth", map_location=self.device, weights_only=True))
-
-
-@hydra.main(version_base=None, config_path="config", config_name="sac_config")
-def main(cfg: DictConfig):
-    """
-    Main function to train and evaluate an SAC agent on different environments.
-    """
-    # Set up logger
-    log = logging.getLogger(__name__)
-    log.info(f"Configuration:\n{OmegaConf.to_yaml(cfg)}")
-
-    # Create a summary log file for key information
-    output_dir = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    summary_path = output_dir / "summary.log"
-
-    # Configure file logging manually to ensure it works
-    file_handler = logging.FileHandler(output_dir / "train.log")
-    file_handler.setFormatter(logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'))
-    log.addHandler(file_handler)
-
-    # Create file handler for summary log
-    summary_handler = logging.FileHandler(summary_path)
-    summary_handler.setLevel(logging.INFO)
-    summary_formatter = logging.Formatter('[%(asctime)s] %(message)s')
-    summary_handler.setFormatter(summary_formatter)
-
-    # Create a separate logger for summary information
-    summary_logger = logging.getLogger("summary")
-    summary_logger.setLevel(logging.INFO)
-    summary_logger.addHandler(summary_handler)
-    summary_logger.propagate = False
-    summary_logger.info(f"Starting SAC training with configuration: {cfg.env_name}")
-
-    # Log system information
-    import platform
-    import torch.cuda
-    system_info = {
-        "Platform": platform.platform(),
-        "Python": platform.python_version(),
-        "PyTorch": torch.__version__,
-        "CUDA Available": torch.cuda.is_available(),
-        "CUDA Version": torch.version.cuda if torch.cuda.is_available() else "N/A",
-        "GPU": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
-    }
-
-    log.info(f"System information:")
-    for key, value in system_info.items():
-        log.info(f"  {key}: {value}")
-    summary_logger.info(f"System: {system_info['Platform']}, PyTorch: {system_info['PyTorch']}, GPU: {system_info['GPU']}")
-
-    # 1. Define environment names and abbreviations
-    EnvName = [
-        'Pendulum-v1',
-        "ContinuousCartPole-v0",
-        'LunarLanderContinuous-v3',
-        'Humanoid-v5',
-        'HalfCheetah-v5',
-        "Hopper-v5"
-    ]
-    BrifEnvName = [
-        'PV1',
-        "CPV0",
-        'LLdV3',
-        'Humanv5',
-        'HCv5',
-        'HPv5'
-    ]
-
-    # Create a config object from Hydra for compatibility with rest of code
-    opt = DictConfig({})
-    for key, value in cfg.items():
-        if key not in ['hydra']:  # Skip hydra config
-            setattr(opt, key, value)
-
-    # 2. Create training and evaluation environments
-    # Import environment modifier if environment modifications are enabled
-    if hasattr(cfg, 'env_mods') and cfg.env_mods.use_mods:
-        # Import the environment_modifiers module
-        from environment_modifiers import create_env_with_mods
-        log.info("Using environment modifications from config")
-        env, eval_env = create_env_with_mods(EnvName[opt.env_index], cfg.env_mods)
-        
-        # Log the modifications being applied
-        # log.info(f"Applied modifications: {OmegaConf.to_yaml(cfg.env_mods)}") # kind of repeated
-        summary_logger.info(f"Environment modifications enabled: {cfg.env_mods.use_mods}") 
-    else:
-        # Use legacy noise settings if env_mods is not used
-        if not opt.noise:
-            env = gym.make(EnvName[opt.env_index])
-            eval_env = gym.make(EnvName[opt.env_index])
-        else:
-            if opt.env_index == 0:
-                env = gym.make("CustomPendulum-v1", spread=opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
-                eval_env = gym.make("CustomPendulum-v1", spread=opt.scale*opt.spread, type=opt.type, adv=opt.adv) # Add noise when updating angle
-
-    # 3. Extract environment properties
-    opt.state_dim = env.observation_space.shape[0]
-    opt.action_dim = env.action_space.shape[0]  # Continuous action dimensionprint
-    opt.max_action = float(env.action_space.high[0])  # Action range [-max_action, max_action]
-    opt.max_e_steps = env._max_episode_steps    
-
-    # 4. Print environment info
-    log.info(
-        f"Env: {EnvName[opt.env_index]}  "
-        f"state_dim: {opt.state_dim}  "
-        f"action_dim: {opt.action_dim}  "
-        f"max_a: {opt.max_action}  "
-        f"min_a: {env.action_space.low[0]}  "
-        f"max_e_steps: {opt.max_e_steps}"
-    )
-
-    # 5. Seed everything for reproducibility
-    env_seed = opt.seed
-    random.seed(opt.seed)
-    np.random.seed(opt.seed)
-    torch.manual_seed(opt.seed)
-    torch.cuda.manual_seed(opt.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    env.action_space.seed(opt.seed)
-    log.info(f"Random Seed: {opt.seed}")
-
-    # 6. Set up TensorBoard for logging (if requested)
-    writer = None
-    if opt.write:
-        from torch.utils.tensorboard import SummaryWriter
-        writepath = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "tensorboard"
-        writepath.mkdir(exist_ok=True)
-        writer = SummaryWriter(log_dir=writepath)
-        log.info(f"TensorBoard logs will be saved to {writepath}")
-
-    # 7. Create a directory for saving models
-    model_dir = Path(f'models/SAC_model/{BrifEnvName[opt.env_index]}')
-    model_dir.mkdir(parents=True, exist_ok=True)
-    log.info(f"Models will be saved to {model_dir}")
-
-    # 8. Initialize the SAC agent
-    agent = SAC_continuous(**OmegaConf.to_container(opt, resolve=True))
-
-    # 9. Load a saved model if requested
-    if opt.load_model:
-        log.info("Loading pre-trained model")
-        # params = f"{opt.std}_{opt.robust}"
-        agent.load(BrifEnvName[opt.env_index], opt.load_path)
-
-    # 10. If rendering mode is on, run an infinite evaluation loop
-    if opt.render:
-        while True:
-            ep_r = evaluate_policy(env, agent, opt.max_action, turns=1)
-            log.info(f"Env: {EnvName[opt.env_index]}, Episode Reward: {ep_r}")
-
-    # 11. If evaluating only, print result
-    elif opt.eval_model:
-        eval_num = 50
-        log.info(f"Evaluating agent across {eval_num} episodes")
-        seeds_list = [random.randint(0, 100000) for _ in range(eval_num)] if not hasattr(opt, 'seeds_list') else opt.seeds_list
-
-        scores = []
-        # Use tqdm for evaluation progress
-        type_lst = ['gaussian','laplace', 't', 'uniform', 'uniform']
-        scale_lst = [2.0, 1.5, 1.0, 0.5, 3.5]
-        type = 'gaussian'
-        for i in tqdm(range(eval_num), desc="Evaluation Progress", ncols=100):
-            # if i % (eval_num // 5) == 0:
-            #     if i > 0:
-            #          summary_logger.info(f"Mean score of last env: {np.mean(scores[i-eval_num//5:i]):.2f}")
-            #     type = type_lst[i // (eval_num//5)]
-            #     scale = scale_lst[i // (eval_num//5)]
-            #     eval_env = gym.make("CustomPendulum-v1", spread=scale*opt.spread, type=type, adv=opt.adv) # Add noise when updating angle
-            score = evaluate_policy(eval_env, agent, turns=1, seeds_list=[seeds_list[i]])
-            scores.append(score)
-            # Update progress bar with current mean score
-            if i > 0 and i % 5 == 4:
-                current_mean = np.mean(scores[:i])
-                tqdm.write(f"Current mean score after {i+1} episodes: {current_mean:.2f}")
-                # Log intermediate results to summary
-                summary_logger.info(f"Intermediate evaluation ({i+1}/{eval_num}): Mean score = {current_mean:.2f}")
-
-        # Calculate statistics
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        p90_score = np.quantile(scores, 0.9)
-        p10_score = np.quantile(scores, 0.1)
-
-        # Save results to output directory
-        results_path = Path(hydra.core.hydra_config.HydraConfig.get().runtime.output_dir) / "results.txt"
-        with open(results_path, 'a') as f:
-            f.write(f"{[BrifEnvName[opt.env_index], opt.spread, "robust="+str(opt.robust), "adv="+str(opt.adv), mean_score, std_score, p90_score, p10_score]}\n")
-
-        log.info(f"Results: {BrifEnvName[opt.env_index]}, Mean: {mean_score:.2f}, Std: {std_score:.2f}")
-        log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
-        log.info(f"Results saved to {results_path}")
-
-        # Log final results to summary file
-        summary_logger.info("-" * 50)
-        summary_logger.info("EVALUATION COMPLETED")
-        summary_logger.info(f"Environment: {EnvName[opt.env_index]}")
-        summary_logger.info(f"Evaluation over {eval_num} episodes:")
-        summary_logger.info(f"  Mean reward: {mean_score:.2f} ± {std_score:.2f}")
-        summary_logger.info(f"  90th percentile: {p90_score:.2f}")
-        summary_logger.info(f"  10th percentile: {p10_score:.2f}")
-        summary_logger.info("-" * 50)
-
-    # 12. Otherwise, proceed with training
-    else:
-        total_steps = 0
-        total_episode = 0
-        
-        # Offline learning doesn't have exploration stage
-        if opt.mode == 'offline':
-            agent.replay_buffer.load(opt.data_path)
-            with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
-                while total_steps < opt.max_train_steps:
-                    agent.train(writer, total_steps)
-                    total_steps += 1
-                    pbar.update(1)
-                    
-                    # Learning rate decay
-                    agent.a_lr *= 0.999
-                    agent.c_lr *= 0.999
-                    
-                    # (d) Evaluate and log periodically
-                    if total_steps % opt.eval_interval == 0:
-                        # Temporarily close progress bars for evaluation
-                        ep_r = evaluate_policy(eval_env, agent, turns=10)
-
-                        if writer is not None:
-                            writer.add_scalar('ep_r', ep_r, global_step=total_steps)
-
-                        log.info(
-                            f"EnvName: {BrifEnvName[opt.env_index]}, "
-                            f"Steps: {int(total_steps/1000)}k, "
-                            f"Episode Reward: {ep_r}"
-                        )
-                        
-                    # (e) Save model at fixed intervals
-                    if opt.save_model and total_steps % opt.save_interval == 0:
-                        agent.save(BrifEnvName[opt.env_index])
-                        
-        elif opt.mode == 'generate':
-            with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
-                while total_steps < opt.max_train_steps:
-                    # (a) Reset environment with incremented seed
-                    state, info = env.reset(seed=env_seed)
-                    env_seed += 1
-                    total_episode += 1
-                    done = False
-
-                    # (b) Interact with environment until episode finishes
-                    while not done:
-                        # Random exploration for some episodes (each episode is up to max_e_steps)
-                        if np.random.random() < opt.epsilon:
-                            # Sample action directly from environment's action space
-                            action_env = env.action_space.sample()  # Range: [-max_action, max_action]
-                            # Convert env action back to agent's internal range [-1,1]
-                            action_agent = Action_adapter_reverse(action_env, opt.max_action)
-                        else:
-                            # Select action from agent (internal range [-1,1])
-                            action_agent = agent.select_action(state, deterministic=False)
-                            # Convert agent action to environment range
-                            action_env = Action_adapter(action_agent, opt.max_action)
-
-                        # Step the environment
-                        next_state, reward, dw, tr, info = env.step(action_env)
-
-                        # Custom reward shaping, if needed
-                        # if opt.reward_adapt:
-                        #     reward = Reward_adapter(reward, opt.env_index)
-
-                        # Check for terminal state
-                        done = (dw or tr)
-
-                        # Store transition in replay buffer
-                        agent.replay_buffer.add(state, action_env, reward, next_state, done)
-
-                        # Move to next step
-                        state = next_state
-                        total_steps += 1
-
-                        # Update progress bars
-                        pbar.update(1)
-                        
-                    if total_episode % 100 == 0:    
-                        log.info(f"Data collected: {total_steps} in {total_episode} episodes.")
-                        
-            agent.replay_buffer.save()
-                    
-        elif opt.mode == 'continuous':
-            # Create a progress bar for the total training steps
-            with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
-                while total_steps < opt.max_train_steps:
-                    # (a) Reset environment with incremented seed
-                    state, info = env.reset(seed=env_seed)
-                    env_seed += 1
-                    total_episode += 1
-                    done = False
-                    ep_reward = 0
-
-                    # Create a progress bar for steps within this episode
-                    episode_pbar = tqdm(total=opt.max_e_steps, desc=f"Episode {total_episode}", 
-                                        leave=False, ncols=100, position=1)
-
-                    # (b) Interact with environment until episode finishes
-                    episode_steps = 0
-                    while not done:
-                        # Random exploration for some episodes (each episode is up to max_e_steps)
-                        if total_steps < (opt.explore_episode * opt.max_e_steps):
-                            # Sample action directly from environment's action space
-                            action_env = env.action_space.sample()  # Range: [-max_action, max_action]
-                            # Convert env action back to agent's internal range [-1,1]
-                            action_agent = Action_adapter_reverse(action_env, opt.max_action)
-                        else:
-                            # Select action from agent (internal range [-1,1])
-                            action_agent = agent.select_action(state, deterministic=False)
-                            # Convert agent action to environment range
-                            action_env = Action_adapter(action_agent, opt.max_action)
-
-                        # Step the environment
-                        next_state, reward, dw, tr, info = env.step(action_env)
-                        ep_reward += reward
-
-                        # Custom reward shaping, if needed
-                        # if opt.reward_adapt:
-                        #     reward = Reward_adapter(reward, opt.env_index)
-
-                        # Check for terminal state
-                        done = (dw or tr)
-
-                        # Store transition in replay buffer
-                        agent.replay_buffer.add(state, action_agent, reward, next_state, done)
-
-                        # Move to next step
-                        state = next_state
-                        total_steps += 1
-                        episode_steps += 1
-
-                        # Update progress bars
-                        pbar.update(1)
-                        episode_pbar.update(1)
-
-                        # Update progress bar description with more info
-                        if total_steps % 10 == 0:
-                            pbar.set_postfix({
-                                'episode': total_episode,
-                                'reward': f"{ep_reward:.2f}"
-                            })
-
-                        # (c) Train the agent at fixed intervals (batch updates)
-                        if (total_steps >= opt.explore_episode * opt.max_e_steps) and (total_steps % opt.update_every == 0):
-                            writer_copy = writer
-                            train_bar = tqdm(range(opt.update_every), 
-                                            desc="Model Update", 
-                                            leave=False, ncols=100, position=2)
-
-                            for i in train_bar:
-                                agent.train(writer_copy, total_steps)
-                                writer_copy = False
-
-                            # Learning rate decay
-                            agent.a_lr *= 0.999
-                            agent.c_lr *= 0.999
-
-                        # (d) Evaluate and log periodically
-                        if total_steps % opt.eval_interval == 0:
-                            # Temporarily close progress bars for evaluation
-                            episode_pbar.close()
-                            pbar.set_description("Evaluating...")
-                            ep_r = evaluate_policy(eval_env, agent, turns=10)
-
-                            if writer is not None:
-                                writer.add_scalar('ep_r', ep_r, global_step=total_steps)
-
-                            log.info(
-                                f"EnvName: {BrifEnvName[opt.env_index]}, "
-                                f"Steps: {int(total_steps/1000)}k, "
-                                f"Episodes: {total_episode}, "
-                                f"Episode Reward: {ep_r}"
-                            )
-
-                            # Reset progress bar description
-                            pbar.set_description("Training Progress")
-                            episode_pbar = tqdm(total=opt.max_e_steps, initial=episode_steps,
-                                                desc=f"Episode {total_episode}", 
-                                                leave=False, ncols=100, position=1)
-
-                        # (e) Save model at fixed intervals
-                        if opt.save_model and total_steps % opt.save_interval == 0:
-                            agent.save(BrifEnvName[opt.env_index])
-
-                    # Close episode progress bar when episode ends
-                    episode_pbar.close()
-
-                    # Log episode stats
-                    log.info(f"Episode {total_episode} completed with reward {ep_reward:.2f} in {episode_steps} steps")
-
-        # Evaluate the trained agent
-        eval_num = 20
-        log.info(f"Training completed. Evaluating across {eval_num} episodes")
-        scores = []
-
-        # Create a progress bar for evaluation
-        for i in tqdm(range(eval_num), desc="Final Evaluation", ncols=100):
-            score = evaluate_policy(eval_env, agent, turns=1)
-            scores.append(score)
-
-        mean_score = np.mean(scores)
-        std_score = np.std(scores)
-        p90_score = np.quantile(scores, 0.9)
-        p10_score = np.quantile(scores, 0.1)
-
-        log.info(f"Final evaluation - Mean: {mean_score:.2f}, Std: {std_score:.2f}")
-        log.info(f"90th percentile: {p90_score:.2f}, 10th percentile: {p10_score:.2f}")
-
-        # Log final results to summary file
-        summary_logger.info("-" * 50)
-        summary_logger.info("TRAINING COMPLETED")
-        summary_logger.info(f"Environment: {EnvName[opt.env_index]}")
-        summary_logger.info(f"Total steps: {total_steps}")
-        summary_logger.info(f"Total episodes: {total_episode}")
-        summary_logger.info(f"Final evaluation over {eval_num} episodes:")
-        summary_logger.info(f"  Mean reward: {mean_score:.2f} ± {std_score:.2f}")
-        summary_logger.info(f"  90th percentile: {p90_score:.2f}")
-        summary_logger.info(f"  10th percentile: {p10_score:.2f}")
-        summary_logger.info("-" * 50)
-
-        # Save final model
-        if opt.save_model:
-            agent.save(BrifEnvName[opt.env_index])
-            log.info(f"Final model saved to models/SAC_model/{BrifEnvName[opt.env_index]}")
-
-    env.close()
-    eval_env.close()
-
-    if writer is not None:
-        writer.close()
-
-    return agent
-
-if __name__ == '__main__':
-    main()
+        if self.robust:
+            self.transition.load_state_dict(torch.load(model_dir / f"tran.pth", map_location=self.device, weights_only=True))

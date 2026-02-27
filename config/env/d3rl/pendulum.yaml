@@ -1,0 +1,9 @@
+# @package _global_
+
+# Pendulum environment config
+# Benchmark Reward: -150
+env_name: Pendulum-v1
+env_index: 0
+max_train_steps: 50000 # 50k
+# a_lr: 0.001
+# c_lr: 0.0005

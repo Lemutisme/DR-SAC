@@ -1,0 +1,11 @@
+# @package _global_
+
+# LunarLanderContinuous environment config
+# Benchmark Reward: 250, std: 25
+env_name: LunarLanderContinuous-v3
+env_index: 2
+eval_freq: 1000
+eval_interval: 1000
+save_interval: 1000
+max_trn_steps: 10000
+max_vae_trn_step: 1000

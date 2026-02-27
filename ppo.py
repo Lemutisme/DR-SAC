@@ -1,6 +1,7 @@
 from utils import evaluate_policy_PPO as evaluate_policy
 from utils import Action_adapter_pos as Action_adapter
-from utils import Reward_adapter, str2bool, build_net, register
+from utils import Reward_adapter, str2bool, build_net
+from ReplayBuffer import ReplayBuffer
 
 import copy
 import math
@@ -216,6 +217,10 @@ class PPO_agent(object):
         self.logprob_a_holder = np.zeros((self.t_horizon, self.action_dim), dtype=np.float32)
         self.done_holder = np.zeros((self.t_horizon, 1), dtype=np.bool_)
         self.dw_holder = np.zeros((self.t_horizon, 1), dtype=np.bool_)
+        
+        # ReplayBuffer for data generation
+        if self.mode == 'generate':
+            self.buffer = ReplayBuffer(self.state_dim, self.action_dim, self.data_size, self.device)
 
     def select_action(self, state, deterministic):
         with torch.no_grad():
@@ -382,18 +387,18 @@ class PPO_agent(object):
         self.dw_holder[idx] = dw
 
     def save(self, env_name):
-        params = f"{self.std}_{self.robust}"
+        # params = f"{self.std}_{self.robust}"
         model_dir = Path(f'./models/PPO_model/{env_name}')
         model_dir.mkdir(parents=True, exist_ok=True)
 
-        torch.save(self.actor.state_dict(), model_dir / f"actor_{params}.pth")
-        torch.save(self.critic.state_dict(), model_dir / f"critic_{params}.pth")
+        torch.save(self.actor.state_dict(), model_dir / f"actor.pth")
+        torch.save(self.critic.state_dict(), model_dir / f"critic.pth")
 
-    def load(self, env_name, params):
-        model_dir = Path(f'./models/PPO_model/{env_name}')
+    def load(self, load_path, env_name):
+        model_dir = Path(f'{load_path}/models/PPO_model/{env_name}')
 
-        self.actor.load_state_dict(torch.load(model_dir / f"actor_{params}.pth", map_location=self.device, weights_only=True))
-        self.critic.load_state_dict(torch.load(model_dir / f"critic_{params}.pth", map_location=self.device, weights_only=True))
+        self.actor.load_state_dict(torch.load(model_dir / f"actor.pth", map_location=self.device, weights_only=True))
+        self.critic.load_state_dict(torch.load(model_dir / f"critic.pth", map_location=self.device, weights_only=True))
 
 @hydra.main(version_base=None, config_path="config", config_name="ppo_config")
 def main(cfg: DictConfig):
@@ -449,19 +454,15 @@ def main(cfg: DictConfig):
         'Pendulum-v1',
         "ContinuousCartPole",
         'LunarLanderContinuous-v3',
-        'Humanoid-v4',
-        'HalfCheetah-v4',
-        'BipedalWalker-v3',
-        'BipedalWalkerHardcore-v3'
+        'HalfCheetah-v5',
+        'Reacher-v5'
     ]
     BrifEnvName = [
         'PV1',
         'CPV0',
-        'LLdV2',
-        'Humanv4',
-        'HCv4',
-        'BWv3',
-        'BWHv3'
+        'LLdV3',
+        'HCV5',
+        'RV5'
     ]
 
     # Create a config object for compatibility with rest of code
@@ -523,8 +524,8 @@ def main(cfg: DictConfig):
 
     # 8. Load existing model if requested
     if opt.load_model:
-        params = f"{opt.std}_{opt.robust}"
-        agent.load(BrifEnvName[opt.env_index], params)
+        # params = f"{opt.std}_{opt.robust}"
+        agent.load(opt.load_path, BrifEnvName[opt.env_index])
         log.info(f"Loaded pre-trained model")
 
     # 9. If rendering is enabled, just evaluate in a loop
@@ -583,119 +584,166 @@ def main(cfg: DictConfig):
         episode_count = 0
         episode_rewards = []
 
-        # Create a progress bar for the total training steps
-        with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
-            while total_steps < opt.max_train_steps:
-                # Reset environment each episode with an incremented seed 
-                s, info = env.reset(seed=env_seed)
-                env_seed += 1
-                done = False
-                episode_count += 1
-                episode_reward = 0
-                episode_steps = 0
+        if opt.mode == 'continual':
+            # Create a progress bar for the total training steps
+            with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
+                while total_steps < opt.max_train_steps:
+                    # Reset environment each episode with an incremented seed 
+                    s, info = env.reset(seed=env_seed)
+                    env_seed += 1
+                    done = False
+                    episode_count += 1
+                    episode_reward = 0
+                    episode_steps = 0
 
-                # Create a progress bar for steps within this episode
-                episode_pbar = tqdm(total=opt.max_steps, desc=f"Episode {episode_count}", 
-                                    leave=False, ncols=100, position=1)
+                    # Create a progress bar for steps within this episode
+                    episode_pbar = tqdm(total=opt.max_steps, desc=f"Episode {episode_count}", 
+                                        leave=False, ncols=100, position=1)
 
-                # 11-a. Interact & train for one episode
-                while not done:
-                    # (i) Select action (stochastic when training)
-                    a, logprob_a = agent.select_action(s, deterministic=False)
+                    # 11-a. Interact & train for one episode
+                    while not done:
+                        # (i) Select action (stochastic when training)
+                        a, logprob_a = agent.select_action(s, deterministic=False)
 
-                    # (ii) Convert action range if needed
-                    act = Action_adapter(a, opt.max_action)  # [0,1] -> [-max_action, max_action]
+                        # (ii) Convert action range if needed
+                        act = Action_adapter(a, opt.max_action)  # [0,1] -> [-max_action, max_action]
 
-                    # (iii) Step environment
-                    s_next, r, dw, tr, info = env.step(act)
-                    r = Reward_adapter(r, opt.env_index)       # Custom reward adapter
-                    done = (dw or tr)
-                    episode_reward += r
+                        # (iii) Step environment
+                        s_next, r, dw, tr, info = env.step(act)
+                        r = Reward_adapter(r, opt.env_index)       # Custom reward adapter
+                        done = (dw or tr)
+                        episode_reward += r
 
-                    # (iv) Store transition for PPO
-                    agent.put_data(
-                        s, a, r, s_next,
-                        logprob_a, done, dw, idx=traj_length
-                    )
-
-                    # Move to next step
-                    s = s_next
-                    traj_length += 1
-                    total_steps += 1
-                    episode_steps += 1
-
-                    # Update progress bars
-                    pbar.update(1)
-                    episode_pbar.update(1)
-
-                    # Update progress bar description with more info
-                    if total_steps % 10 == 0:
-                        pbar.set_postfix({
-                            'episode': episode_count,
-                            'reward': f"{episode_reward:.2f}"
-                        })
-
-                    # (v) Update agent if horizon reached
-                    if traj_length % opt.t_horizon == 0:
-                        # Temporarily close episode progress bar for training updates
-                        episode_pbar.set_description("Training agent...")
-
-                        # Train the agent
-                        agent.train(writer, total_steps)
-                        traj_length = 0
-
-                        # Reset episode progress bar description
-                        episode_pbar.set_description(f"Episode {episode_count}")
-
-                    # Learning rate decay for longer training runs
-                    if total_steps >= 4e5 and total_steps % 5e3 == 0:
-                        agent.a_lr *= 0.95
-                        agent.c_lr *= 0.95
-                        log.info(f"Decaying learning rates - Actor: {agent.a_lr:.6f}, Critic: {agent.c_lr:.6f}")
-
-                    # (vi) Periodically evaluate and log
-                    if total_steps % opt.eval_interval == 0:
-                        # Temporarily close progress bars for evaluation
-                        episode_pbar.close()
-                        pbar.set_description("Evaluating...")
-
-                        score = evaluate_policy(eval_env, agent, opt.max_action, turns=20)
-
-                        if writer is not None:
-                            writer.add_scalar('ep_r', score, global_step=total_steps)
-
-                        log_message = (
-                            f"EnvName: {EnvName[opt.env_index]}, "
-                            f"Steps: {int(total_steps/1000)}k, "
-                            f"Episodes: {episode_count}, "
-                            f"Score: {score}"
+                        # (iv) Store transition for PPO
+                        agent.put_data(
+                            s, a, r, s_next,
+                            logprob_a, done, dw, idx=traj_length
                         )
-                        log.info(log_message)
 
-                        # Also log to summary file
-                        summary_logger.info(f"Step {total_steps}: Score = {score:.2f}")
+                        # Move to next step
+                        s = s_next
+                        traj_length += 1
+                        total_steps += 1
+                        episode_steps += 1
 
-                        # Reset progress bar description
-                        pbar.set_description("Training Progress")
-                        episode_pbar = tqdm(total=opt.max_steps, initial=episode_steps,
-                                            desc=f"Episode {episode_count}", 
-                                            leave=False, ncols=100, position=1)
+                        # Update progress bars
+                        pbar.update(1)
+                        episode_pbar.update(1)
 
-                    # (vii) Periodically save model
-                    if opt.save_model and total_steps % opt.save_interval == 0:
-                        agent.save(BrifEnvName[opt.env_index])
-                        log.info(f"Model saved at step {total_steps}")
+                        # Update progress bar description with more info
+                        if total_steps % 10 == 0:
+                            pbar.set_postfix({
+                                'episode': episode_count,
+                                'reward': f"{episode_reward:.2f}"
+                            })
 
-                # Close episode progress bar when episode ends
-                episode_pbar.close()
+                        # (v) Update agent if horizon reached
+                        if traj_length % opt.t_horizon == 0:
+                            # Temporarily close episode progress bar for training updates
+                            episode_pbar.set_description("Training agent...")
 
-                # Log episode stats
-                episode_rewards.append(episode_reward)
-                recent_rewards = episode_rewards[-100:] if len(episode_rewards) >= 100 else episode_rewards
+                            # Train the agent
+                            agent.train(writer, total_steps)
+                            traj_length = 0
 
-                log.info(f"Episode {episode_count} completed with reward {episode_reward:.2f} in {episode_steps} steps")
-                log.info(f"Recent average reward (last {len(recent_rewards)} episodes): {np.mean(recent_rewards):.2f}")
-                summary_logger.info(f"Episode {episode_count}: Reward = {episode_reward:.2f}, Steps = {episode_steps}")
+                            # Reset episode progress bar description
+                            episode_pbar.set_description(f"Episode {episode_count}")
+
+                        # Learning rate decay for longer training runs
+                        if total_steps >= 4e5 and total_steps % 5e3 == 0:
+                            agent.a_lr *= 0.95
+                            agent.c_lr *= 0.95
+                            log.info(f"Decaying learning rates - Actor: {agent.a_lr:.6f}, Critic: {agent.c_lr:.6f}")
+
+                        # (vi) Periodically evaluate and log
+                        if total_steps % opt.eval_interval == 0:
+                            # Temporarily close progress bars for evaluation
+                            episode_pbar.close()
+                            pbar.set_description("Evaluating...")
+
+                            score = evaluate_policy(eval_env, agent, opt.max_action, turns=20)
+
+                            if writer is not None:
+                                writer.add_scalar('ep_r', score, global_step=total_steps)
+
+                            log_message = (
+                                f"EnvName: {EnvName[opt.env_index]}, "
+                                f"Steps: {int(total_steps/1000)}k, "
+                                f"Episodes: {episode_count}, "
+                                f"Score: {score}"
+                            )
+                            log.info(log_message)
+
+                            # Also log to summary file
+                            summary_logger.info(f"Step {total_steps}: Score = {score:.2f}")
+
+                            # Reset progress bar description
+                            pbar.set_description("Training Progress")
+                            episode_pbar = tqdm(total=opt.max_steps, initial=episode_steps,
+                                                desc=f"Episode {episode_count}", 
+                                                leave=False, ncols=100, position=1)
+
+                        # (vii) Periodically save model
+                        if opt.save_model and total_steps % opt.save_interval == 0:
+                            agent.save(BrifEnvName[opt.env_index])
+                            log.info(f"Model saved at step {total_steps}")
+
+                    # Close episode progress bar when episode ends
+                    episode_pbar.close()
+
+                    # Log episode stats
+                    episode_rewards.append(episode_reward)
+                    recent_rewards = episode_rewards[-100:] if len(episode_rewards) >= 100 else episode_rewards
+
+                    log.info(f"Episode {episode_count} completed with reward {episode_reward:.2f} in {episode_steps} steps")
+                    log.info(f"Recent average reward (last {len(recent_rewards)} episodes): {np.mean(recent_rewards):.2f}")
+                    summary_logger.info(f"Episode {episode_count}: Reward = {episode_reward:.2f}, Steps = {episode_steps}")
+            
+        elif opt.mode == 'generate':
+            with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
+                while total_steps < opt.max_train_steps:
+                    # Reset environment each episode with an incremented seed 
+                    s, info = env.reset(seed=env_seed)
+                    env_seed += 1
+                    done = False
+                    episode_count += 1
+                    episode_steps = 0
+
+                    # Create a progress bar for steps within this episode
+                    # episode_pbar = tqdm(total=opt.max_steps, desc=f"Episode {episode_count}", 
+                    #                     leave=False, ncols=100, position=1)
+
+                    # 11-a. Interact & train for one episode
+                    while not done:
+                        if np.random.random() < opt.epsilon:
+                            # Sample action directly from environment's action space
+                            act = env.action_space.sample()  
+                        else:
+                            # (i) Select action (stochastic when training)
+                            a, logprob_a = agent.select_action(s, deterministic=False)
+
+                            # (ii) Convert action range if needed
+                            act = Action_adapter(a, opt.max_action)  # [0,1] -> [-max_action, max_action]
+
+                        # (iii) Step environment
+                        s_next, r, dw, tr, info = env.step(act)
+                        # r = Reward_adapter(r, opt.env_index)       # Custom reward adapter
+                        done = (dw or tr)
+
+                        # (iv) Store transition for PPO
+                        agent.buffer.add(s, act, r, s_next, done)
+                        
+                        # Move to next step
+                        s = s_next
+                        traj_length += 1
+                        total_steps += 1
+                        episode_steps += 1
+
+                        # Update progress bars
+                        pbar.update(1)
+            
+            agent.buffer.save()
+                    
 
         # Final evaluation after training
         eval_num = 20

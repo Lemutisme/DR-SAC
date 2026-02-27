@@ -1,4 +1,5 @@
 import argparse
+import random
 import torch.nn as nn
 
 def build_net(layer_shape, hidden_activation, output_activation):
@@ -10,54 +11,53 @@ def build_net(layer_shape, hidden_activation, output_activation):
     return nn.Sequential(*layers)
 
 # Reward engineering for better training
-def Reward_adapter(r, EnvIdex):
+def Reward_adapter(r, EnvIndex):
     # For Pendulum-v0
-    if EnvIdex == 0:
+    if EnvIndex == 0:
         r = (r + 8) / 8
     # For LunarLander
-    elif EnvIdex == 2:
+    elif EnvIndex == 2:
         if r <= -100: r = -10
-    elif EnvIdex == 4:
-        r = r / 100
-    elif EnvIdex == 5:
-        r = r / 100
-    # elif EnvIdex == 2:
-    #     r = r / 5
-    # For BipedalWalker
-    # elif EnvIdex == 4 or EnvIdex == 5:
-    #     if r <= -100: r = -1
+    # For Halfcheetah
+    # elif EnvIdex == 4:
+    #     r = (r + 10) / 20
+    # For Hooper
+    # elif EnvIdex == 5:
+    #     r = (r + 1) / 5
     return r
 
-def Action_adapter_symm(act, max_action):
-    #from [-1,1] to [-max,max]
-    return  act * max_action
+# def Action_adapter_symm(act, max_action):
+#     #from [-1,1] to [-max,max]
+#     return  act * max_action
 
-def Action_adapter_symm_reverse(act, max_action):
-    #from [-max,max] to [-1,1]
-    return  act / max_action
+# def Action_adapter_symm_reverse(act, max_action):
+#     #from [-max,max] to [-1,1]
+#     return  act / max_action
 
 def Action_adapter_pos(a, max_action):
     #from [0,1] to [-max,max]
     return  2 * (a - 0.5) * max_action
 
-def evaluate_policy_SAC(env, agent, turns = 1, seeds_list = []):
+def evaluate_policy_SAC(env, agent, turns = 1, seeds_list = [], random_action_prob=0):
     total_scores = 0
     for j in range(turns):
         if len(seeds_list) > 0:
-            s, info = env.reset(seed=seeds_list[j])
+            s, _ = env.reset(seed=seeds_list[j])
         else:
-            s, info = env.reset()
+            s, _ = env.reset()
         done = False
         while not done:
-            # Take deterministic actions at test time
-            a = agent.select_action(s, deterministic=True)
-            a_env = Action_adapter_symm(a, agent.max_action)
-            s_next, r, dw, tr, info = env.step(a_env)
+            if random.random() < random_action_prob:
+                a = env.action_space.sample()
+            else:
+                # Take deterministic actions at test time
+                a = agent.select_action(s, deterministic=True)
+            s_next, r, dw, tr, info = env.step(a)
             done = (dw or tr)
 
             total_scores += r
             s = s_next
-    return int(total_scores/turns)
+    return round(total_scores/turns, 1)
 
 def evaluate_policy_PPO(env, agent, max_action, turns=3):
     total_scores = 0

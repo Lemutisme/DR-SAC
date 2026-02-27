@@ -1,0 +1,19 @@
+# @package _global_
+
+# Hopper environment config
+env_name: Hopper-v5
+env_index: 5
+eval_freq: 1000
+eval_interval: 1000
+save_interval: 1000
+max_trn_steps: 35000
+max_vae_trn_step: 10000
+
+
+# Adam stepsize*
+adam_lr: 1e-3
+# learning rate of actor
+actor_lr: 8e-4
+critic_lr: 8e-4
+
+vmin: -100

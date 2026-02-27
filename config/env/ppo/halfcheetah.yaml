@@ -1,0 +1,15 @@
+# @package _global_
+
+# HalfCheetah environment config
+# Benchmark Reward: 6000, std: 150
+env_name: HalfCheetah-v5
+env_index: 3
+a_optim_batch_size: 64
+c_optim_batch_size: 64
+entropy_coef: 0.0004
+lambd: 0.92
+gamma: 0.98
+k_epochs: 20
+net_width: 256
+t_horizon: 512
+

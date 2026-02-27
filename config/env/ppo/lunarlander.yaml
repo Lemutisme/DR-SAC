@@ -1,0 +1,8 @@
+# @package _global_
+
+# LunarLanderContinuous environment config
+# Benchmark Reward: 250, std: 25
+env_name: LunarLanderContinuous-v3
+env_index: 2
+a_lr: 0.001
+c_lr: 0.001

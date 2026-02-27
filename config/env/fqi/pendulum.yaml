@@ -1,0 +1,11 @@
+# @package _global_
+
+# Pendulum environment config
+# Benchmark Reward: -150
+env_name: Pendulum-v1
+env_index: 0
+eval_freq: 1000
+eval_interval: 1000
+save_interval: 1000
+max_trn_steps: 10000
+max_vae_trn_step: 1000

@@ -1,0 +1,16 @@
+# @package _global_
+
+# Humanoid environment config
+# Benchmark Reward: 4000, std:1000
+env_name: Humanoid-v5
+env_index: 3
+max_train_steps: 500000 # 500k
+net_arch: [256,256]
+update_every: 10
+net_layer: 1
+a_lr: 0.0001  # 1e-4
+c_lr: 0.0001 # 1e-4
+b_lr: 0.0005 # 5e-5
+g_lr: 0.0005 # 5e-4
+r_lr: 0.00005 # 5e-5
+l2_reg: 0.0 

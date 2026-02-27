@@ -1,0 +1,8 @@
+# @package _global_
+
+# ContinuousCartPole environment config
+# Baseline Reward: 500 (perfect score, zero-std)
+env_name: ContinuousCartPole
+env_index: 1
+max_train_steps: 50000 # Offline learning: 20k
+#max_train_steps: 200000 # Continual learning: 200k
