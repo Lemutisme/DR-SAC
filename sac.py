@@ -30,7 +30,7 @@ class Actor(nn.Module):
         self.LOG_STD_MIN = -20
         self.max_action = max_action
         
-        # init as in the EDAC paper
+        # Initialize as in the EDAC paper.
         for layer in self.a_net[0:-1:2]:
             torch.nn.init.constant_(layer.bias, 0.1)
             
@@ -40,7 +40,7 @@ class Actor(nn.Module):
         torch.nn.init.uniform_(self.log_std_layer.bias, -1e-3, 1e-3)
 
     def forward(self, state, deterministic, with_logprob):
-        '''Network with Enforcing Action Bounds'''
+        """Network forward pass with enforced action bounds."""
         net_out = self.a_net(state)
         mu = self.mu_layer(net_out)
         log_std = self.log_std_layer(net_out)
@@ -49,12 +49,13 @@ class Actor(nn.Module):
         dist = Normal(mu, std)
         u = mu if deterministic else dist.rsample()
 
-        '''Enforcing Action Bounds, see Page 16 of https://arxiv.org/pdf/1812.05905.pdf '''
+        """Enforce action bounds; see page 16 of https://arxiv.org/pdf/1812.05905.pdf."""
         a = torch.tanh(u)
         if with_logprob:
             # Get probability density of logp_pi_a from probability density of u:
             # logp_pi_a = (dist.log_prob(u) - torch.log(1 - a.pow(2) + 1e-6)).sum(dim=1, keepdim=True)
-            # Derive from the above equation. No a, thus no tanh(h), thus less gradient vanish and more stable.
+            # Derived from the equation above. Avoids tanh(a) in the expression,
+            # which helps reduce gradient vanishing and improves stability.
             logp_pi_a = dist.log_prob(u).sum(axis=1, keepdim=True) - (2 * (np.log(2) - u - F.softplus(-2 * u))).sum(axis=1, keepdim=True)
         else:
             logp_pi_a = None
@@ -115,7 +116,7 @@ class VectorizedCritic(nn.Module):
                            nn.ReLU()])
         layers.append( VectorizedLinear(hidden_dim[0], 1, num_critics))
         self.critic = nn.Sequential(*layers)
-        # init as in the EDAC paper
+        # Initialize as in the EDAC paper.
         for layer in self.critic[::2]:
             torch.nn.init.constant_(layer.bias, 0.1)
 
@@ -151,7 +152,7 @@ class Double_Q_Critic(nn.Module):
         return q1, q2
 
 # ----------------------------- Generative Transition Models ------------------------------ #
-# VAE-based Transition Model
+# VAE-based transition model
 class MLPTransitionVAE(nn.Module):
     def __init__(self, state_dim: int, action_dim: int, hidden_dim: list[int], hidden_layer: int, latent_dim: int):
         super(MLPTransitionVAE, self).__init__()
@@ -200,7 +201,7 @@ class MLPTransitionVAE(nn.Module):
         s_next_samples = self.decode(s_expanded, a_expanded, z)
         return s_next_samples   
 
-# Helper MLP for time embedding
+# Helper MLP for timestep embedding
 class TimeMLP(nn.Module):
     """Minimal timestep embedding: scalar t -> vector embedding."""
     def __init__(self, emb_dim):
@@ -215,7 +216,7 @@ class TimeMLP(nn.Module):
         x = F.relu(self.fc2(x))
         return x  # (B, emb_dim)
 
-# Diffusion-based Transition Model
+# Diffusion-based transition model
 class TransitionDiffusion(nn.Module):
     """
     Clean conditional diffusion model for p(s_next | s, a).
@@ -309,7 +310,7 @@ class TransitionDiffusion(nn.Module):
         # start from pure noise
         x = torch.randn(B * num_samples, self.state_dim, device=s.device)
 
-        # naive reverse loop
+        # Basic reverse diffusion loop
         for t_step in reversed(range(self.timesteps)):
             t = torch.full((x.size(0),), t_step, device=s.device, dtype=torch.long)
             eps = self.forward(s_exp, a_exp, x, t)
@@ -330,7 +331,7 @@ class TransitionDiffusion(nn.Module):
 
         return x.view(B, num_samples, self.state_dim)
 
-# Flow-based Transition Model 
+# Flow-based transition model
 class ConditionalFlow(nn.Module):
     """
     Simplest conditional RealNVP-like flow:
@@ -427,7 +428,7 @@ class ConditionalFlow(nn.Module):
         # reshape
         return x.view(B, num_samples, self.state_dim)
 
-# Score-based Transition Model
+# Score-based transition model
 class SigmaMLP(nn.Module):
     """
     Tiny embedding network for the noise level sigma.
@@ -561,7 +562,7 @@ class ExpActivation(nn.Module):
     def forward(self, x):
         return torch.exp(x)   
 
-# To approximate functional set G
+# Approximates the functional set G
 class dual(nn.Module):
     def __init__(self, state_dim, action_dim, hid_dim, hid_layers):
         super(dual, self).__init__()  
@@ -575,7 +576,7 @@ class dual(nn.Module):
 # ----------------------------- Soft Actor-Critic (SAC) Agent ------------------------------ #
 class SAC_continuous():
     def __init__(self, **kwargs):
-        # Init hyperparameters for agent, just like "self.gamma = opt.gamma, self.lambd = opt.lambd, ..."
+        # Initialize agent hyperparameters from kwargs.
         self.__dict__.update(kwargs)
         self.max_action = torch.tensor(self.max_action, device=self.device)
         self.max_state = torch.tensor(self.max_state, device=self.device)
@@ -585,7 +586,7 @@ class SAC_continuous():
         self.actor = Actor(self.state_dim, self.action_dim, self.max_action, self.hid_dim, self.net_layer).to(self.device)
         self.actor_optimizer = torch.optim.AdamW(self.actor.parameters(), lr=self.a_lr)
 
-        # Option of using V-critic
+        # Optional V-critic branch
         if self.use_v:
             self.v_critic = V_Critic(self.state_dim, self.hid_dim, self.net_layer).to(self.device)
             self.v_critic_optimizer = torch.optim.AdamW(self.v_critic.parameters(), lr=self.c_lr)
@@ -594,7 +595,7 @@ class SAC_continuous():
             for p in self.v_critic_target.parameters():
                 p.requires_grad = False
 
-        # Option of vectorized / parallel(limit to 2) critics
+        # Optional vectorized/parallel critic branch
         if self.critic_ensemble:
             self.q_critic = VectorizedCritic(self.state_dim, self.action_dim, self.hid_dim, self.net_layer, self.n_critic).to(self.device)
         else:
@@ -607,7 +608,7 @@ class SAC_continuous():
             
         if self.robust:    
             print('This is a robust policy.')
-            # Generative model for transition dynamics
+            # Generative transition model
             if self.gen_type == 'vae':
                 self.transition = MLPTransitionVAE(self.state_dim, self.action_dim, hidden_dim=self.hid_dim, hidden_layer=self.net_layer, latent_dim=self.vae_latent_dim).to(self.device)
             elif self.gen_type == 'diffusion':
@@ -626,7 +627,7 @@ class SAC_continuous():
                 self.g = dual(self.state_dim, self.action_dim, self.hid_dim, self.net_layer).to(self.device)
                 self.g_optimizer = torch.optim.AdamW(self.g.parameters(), lr=self.g_lr)
 
-        # Option for auto-tune temperature alpha
+        # Optional auto-tuning for temperature alpha
         if self.adaptive_alpha:
             # Target Entropy = −dim(A) (e.g. , -6 for HalfCheetah-v2) as given in the paper
             self.target_entropy = torch.tensor(-self.action_dim, dtype=float, requires_grad=True, device=self.device)
@@ -635,7 +636,7 @@ class SAC_continuous():
             self.alpha_optim = torch.optim.AdamW([self.log_alpha], lr=self.c_lr)      
 
     def select_action(self, state, deterministic):
-        # only used when interact with the env
+        # Used only when interacting with the environment.
         with torch.no_grad():
             state = torch.FloatTensor(state[np.newaxis,:]).to(self.device)
             a, _ = self.actor(state, deterministic, with_logprob=False)
@@ -647,7 +648,7 @@ class SAC_continuous():
         return - dual_sa * (torch.logsumexp(-self.v_critic_target(s_next).squeeze(-1)/dual_sa, dim=1, keepdim=True) - math.log(size)) - dual_sa * self.delta     
 
     def dual_func_ind(self, s_next, beta):
-        # Independently optimize, in np.array
+        # Optimize independently in NumPy space.
         size = s_next.shape[-1]
         v_next = self.v_critic_target(s_next)
         v_next = v_next.cpu().numpy()
@@ -675,16 +676,16 @@ class SAC_continuous():
         return tr_loss.item()
     
     def diffusion_train(self, debug_print, writer, step, iterations, sample=True, s_norm=None, s_next_norm=None, a=None):
-        """     
-        Assumes self.transition is a SimpleTransitionDiffusion (or similar)
-        and self.trans_optimizer is its optimizer.
+        """
+        Assumes `self.transition` is a diffusion transition model and
+        `self.trans_optimizer` is its optimizer.
         """
         for _ in range(iterations):
             if sample:
-                # sample from replay, same as VAE
+                # Sample from replay buffer (same pattern as VAE training).
                 s, a, r, s_next, dw, s_norm, s_next_norm = self.replay_buffer.sample(self.batch_size)
 
-            # diffusion loss: E_{t,eps} || eps - eps_theta(x_t, s, a, t) ||^2
+            # Diffusion loss: E_{t,eps} || eps - eps_theta(x_t, s, a, t) ||^2
             tr_loss = self.transition.loss(s_norm, a, s_next_norm)
 
             self.trans_optimizer.zero_grad()
@@ -729,12 +730,12 @@ class SAC_continuous():
     def score_train(self, debug_print, writer, step, iterations,
                 sample=True, s_norm=None, s_next_norm=None, a=None):
         """
-        Train the score-based transition model (ConditionalScoreModel)
+        Train the score-based transition model (`ConditionalScoreModel`).
 
         Assumes:
             - self.transition is a ConditionalScoreModel
             - self.trans_optimizer is its optimizer
-            - replay_buffer.sample returns (..., s_norm, s_next_norm)
+            - `replay_buffer.sample` returns (..., s_norm, s_next_norm)
         """
         for _ in range(iterations):
             if sample:

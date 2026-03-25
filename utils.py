@@ -3,7 +3,7 @@ import random
 import torch.nn as nn
 
 def build_net(layer_shape, hidden_activation, output_activation):
-    '''Build net with for loop'''
+    """Build a feedforward network with a simple for-loop."""
     layers = []
     for j in range(len(layer_shape)-1):
         # network shape
@@ -14,19 +14,17 @@ def build_net(layer_shape, hidden_activation, output_activation):
     return nn.Sequential(*layers)
 
 def Reward_adapter(r, EnvIndex):
-    '''Reward engineering for better training'''
+    """Apply reward shaping for selected environments."""
     # For Pendulum-v0
     if EnvIndex == 0:
         r = (r + 8) / 8
     # For LunarLander-v3
     elif EnvIndex == 2:
         if r <= -100: r = -10
-    elif EnvIndex == 5:
-        r *= 0.01
     return r
 
 def evaluate_policy(env, agent, turns = 1, seeds_list = [], random_action_prob=0):
-    '''Evaluate SAC policy'''
+    """Evaluate the SAC policy."""
     total_scores = 0
     for j in range(turns):
         # Use given seeds, otherwise reset randomly
@@ -37,7 +35,7 @@ def evaluate_policy(env, agent, turns = 1, seeds_list = [], random_action_prob=0
             
         done = False
         while not done:
-            # Actuator takes random action in some test cases
+            # In some test settings, the policy takes random actions.
             if random.random() < random_action_prob:
                 a = env.action_space.sample()
             else:
@@ -50,7 +48,7 @@ def evaluate_policy(env, agent, turns = 1, seeds_list = [], random_action_prob=0
     return round(total_scores/turns, 2)
 
 def str2bool(v):
-    '''transfer str to bool for argparse'''
+    """Convert string inputs to bool for argparse."""
     if isinstance(v, bool):
         return v
     if v.lower() in ('yes', 'True','true','TRUE', 't', 'y', '1'):

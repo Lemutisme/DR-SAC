@@ -20,8 +20,8 @@ from gymnasium.envs.registration import register
 
 logger = logging.getLogger(__name__)
 
-#----------------------------- ↓↓↓↓↓ Parameter Shifted Env ↓↓↓↓↓ ------------------------------#
-# Customized Pendulum
+#----------------------------- ↓↓↓↓↓ Parameter-Shifted Envs ↓↓↓↓↓ ------------------------------#
+# Custom Pendulum
 class ParameterShiftedPendulum(PendulumEnv):
     def __init__(self, render_mode=None, gravity_factor=1.0, mass_factor=1.0, length_factor=1.0):
         """
@@ -40,7 +40,7 @@ class ParameterShiftedPendulum(PendulumEnv):
         
         logger.info(f"Parameter Shifted Pendulum: g={self.g:.2f}, m={self.m:.2f}, l={self.l:.2f}")
 
-# Register the environments
+# Register environments
 register(
     id="ParameterShiftedPendulum-v1",
     entry_point="environment_modifiers:ParameterShiftedPendulum",
@@ -48,7 +48,7 @@ register(
     kwargs={'gravity_factor':1.0, 'mass_factor':1.0, 'length_factor':1.0}
 )
 
-# Customized LunarLander
+# Custom LunarLander
 class ParameterShiftedLunarLander(LunarLander):
     def __init__(self, render_mode=None, gravity_factor=1.0, wind_power=0.0, turbulence_power=1.5, engine_factor=1.0):
         """
@@ -69,7 +69,7 @@ class ParameterShiftedLunarLander(LunarLander):
                     f"turbulence_power={turbulence_power:.2f},"
                     f"engine_factor={engine_factor:.2f}")
         
-    # We redefine step function to change MAIN_ENGINE_POWER and SIDE_ENGINE_POWER
+    # Redefine step to adjust MAIN_ENGINE_POWER and SIDE_ENGINE_POWER.
     def step(self, action):
         # Constant
         FPS = 50
@@ -297,7 +297,7 @@ register(
     kwargs={'gravity_factor':1.0, 'wind_power':0.0, 'turbulence_power':1.5, "engine_factor": 1.0}
 )
 
-# Customized Continuous Cartpole
+# Custom Continuous CartPole
 class ParameterShiftedCartpole(ContinuousCartPoleEnv):
     def __init__(self, gravity_factor=1.0, length_factor=1.0, mass_factor=1.0, force_mag_factor=1.0):
         """
@@ -327,7 +327,7 @@ register(
     kwargs={'gravity_factor':1.0, 'length_factor':1.0, 'mass_factor':1.0, 'force_mag_factor':1.0}
 )
 
-# Customized Halfcheetah
+# Custom HalfCheetah
 class ParameterShiftedHalfCheetah(HalfCheetahEnv):
     def __init__(self, back_stiff=1.0, front_stiff=1.0,
                        back_damping=1.0, front_damping=1.0):
@@ -337,7 +337,7 @@ class ParameterShiftedHalfCheetah(HalfCheetahEnv):
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             self.model.jnt_stiffness[joint_id] *= front_stiff
             self.model.dof_damping[joint_id] *= front_damping
-         # Joints on the back
+        # Joints on the back
         for name in ['bthigh', 'bshin', 'bfoot']:
             joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, name)
             self.model.jnt_stiffness[joint_id] *= back_stiff
@@ -354,18 +354,18 @@ register(
     kwargs={'back_stiff':1.0, 'front_stiff':1.0, 'back_damping':1.0, 'front_damping':1.0}
 )
 
-# Customized Reacher
+# Custom Reacher
 class ParameterShiftedReacher(ReacherEnv):
     def __init__(self, joint0_stiff=0.0, joint1_stiff=0.0,
                        joint0_damping=1.0, joint1_damping=1.0,
                        act_ctrlrange=1.0):
         """
-        Cartpole environment with shifted parameters.
+        Reacher environment with shifted parameters.
 
         Args:
            
         """
-        # Now modify attributes
+        # Initialize base environment first, then modify attributes.
         super().__init__()
         
         joint0_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, 'joint0')
@@ -381,7 +381,7 @@ class ParameterShiftedReacher(ReacherEnv):
         logger.info(f"Parameter Shifted Reacher: "
                     f"joint stiffness={self.model.jnt_stiffness}, "
                     f"joint damping={self.model.dof_damping}, "
-                    f"acuator control range={self.model.actuator_ctrlrange}")
+                    f"actuator control range={self.model.actuator_ctrlrange}")
         
 register(
     id="ParameterShiftedReacher-v5",
@@ -390,7 +390,7 @@ register(
     kwargs={'joint0_stiff':0.0, 'joint1_stiff':0.0, 'joint0_damping':1.0, 'joint1_damping':1.0, 'act_ctrlrange':1.0}
 )
 
-#----------------------------- ↓↓↓↓↓ Env Modification Wrapper ↓↓↓↓↓ ------------------------------#
+#----------------------------- ↓↓↓↓↓ Environment Modification Wrappers ↓↓↓↓↓ ------------------------------#
 # Observation Noise Wrapper
 class ObservationNoiseWrapper(gym.Wrapper):
     def __init__(self, env, noise_type='gaussian', noise_level=0.1, noise_freq=1.0, noise_dim=[]):
@@ -408,7 +408,7 @@ class ObservationNoiseWrapper(gym.Wrapper):
         self.noise_type = noise_type
         self.noise_level = noise_level
         self.noise_freq = noise_freq
-        # Some dimension valeus are not appropriate for adding noise: e.g. binary, sin, cos.
+        # Some dimension values are not suitable for noise (e.g., binary, sin, cos terms).
         if not noise_dim:
             self.noise_dim = range(env.observation_space.shape[0])
         else:
@@ -518,7 +518,7 @@ class ActionPerturbationWrapper(gym.Wrapper):
                     action = np.zeros_like(action)
 
             elif self.perturb_type == 'stuck':
-                # Action gets stuck for several timesteps
+                # Action remains stuck for several timesteps.
                 if self.stuck_count > 0:
                     action = self.stuck_action
                     self.stuck_count -= 1
@@ -595,8 +595,8 @@ class RewardShiftWrapper(gym.Wrapper):
 # Transition Perturbation Wrapper
 class TransitionPerturbationWrapper(gym.Wrapper):
     """
-    This wrapper perturbs the transition dynamics by applying forces,
-    teleporting the agent, or other dynamics modifications.
+    Perturb transition dynamics by applying forces, teleporting the agent,
+    or using other dynamics-level modifications.
     """
     def __init__(self, env, perturb_type='teleport', perturb_prob=0.05, perturb_level=0.1):
         """
@@ -620,7 +620,7 @@ class TransitionPerturbationWrapper(gym.Wrapper):
         if np.random.random() < self.perturb_prob:
             if self.perturb_type == 'teleport':
                 # Teleport the agent by modifying the observation
-                # Note: This doesn't actually change internal state, just what agent observes
+                # Note: this does not change internal state, only the observation.
                 perturbation = np.random.normal(0, self.perturb_level, size=obs.shape)
                 obs = obs + perturbation
                 obs = np.clip(obs, self.observation_space.low, self.observation_space.high)
@@ -661,8 +661,8 @@ def create_env_with_mods(env_name, env_config):
         logger.info("No environment modifications applied")
         return train_env, eval_env
 
-    #----------------------------- ↓↓↓↓↓ Self-defined Env ↓↓↓↓↓ ------------------------------#                    
-    # Param_shift environments
+    #----------------------------- ↓↓↓↓↓ Self-defined Envs ↓↓↓↓↓ ------------------------------#
+    # Parameter-shifted environments
     if env_config.use_mods and env_config.param_shift.enabled:
         assert env_config.param_shift.train_apply or env_config.param_shift.eval_apply
         if env_name == "Pendulum-v1": 
@@ -750,17 +750,17 @@ def create_env_with_mods(env_name, env_config):
             else:
                 eval_env = gym.make(env_name)
 
-    #----------------------------- ↓↓↓↓↓ Add General Wrapper ↓↓↓↓↓ ------------------------------#
+    #----------------------------- ↓↓↓↓↓ Add General Wrappers ↓↓↓↓↓ ------------------------------#
     # Apply modifications to training environment
     logger.info("Applying modifications to training environment")
 
     # Apply observation noise if configured
     if env_config.observation_noise.enabled:
         noise_dim = []
-        # Dimension 6-7 in LunarLander state vectors are bianry
+        # Dimensions 6-7 in LunarLander state vectors are binary.
         if env_name == 'LunarLanderContinuous-v3':
             noise_dim = range(6)
-        # Dimension 0-3 in Reacher state vectors are trigonometric values
+        # Dimensions 0-3 in Reacher state vectors are trigonometric values.
         elif env_name == 'Reacher-v5':
             noise_dim = range(4,10)
         logger.info(f"Adding observation noise: {env_config.observation_noise.type} with level {env_config.observation_noise.noise_level}")

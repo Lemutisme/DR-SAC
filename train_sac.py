@@ -29,7 +29,7 @@ def main(cfg: DictConfig):
 
     summary_path = output_dir / "summary.log"
 
-    # Configure file logging manually to ensure it works
+    # Configure file logging explicitly to ensure output is captured.
     file_handler = logging.FileHandler(output_dir / "train.log")
     file_handler.setFormatter(logging.Formatter('[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'))
     log.addHandler(file_handler)
@@ -80,16 +80,16 @@ def main(cfg: DictConfig):
         'RV5'
     ]
 
-    # Create a config object from Hydra for compatibility with rest of code
+    # Create a config object from Hydra for compatibility with the rest of the code.
     opt = DictConfig({})
     for key, value in cfg.items():
         if key not in ['hydra']:  # Skip hydra config
             setattr(opt, key, value)
 
     # 2. Create training and evaluation environments
-    # Import environment modifier if environment modifications are enabled
+    # Import environment modifiers if enabled.
     if hasattr(cfg, 'env_mods') and cfg.env_mods.use_mods:
-        # Import the environment_modifiers module
+        # Import environment_modifiers lazily to avoid unnecessary side effects.
         from environment_modifiers import create_env_with_mods
         log.info("Using environment modifications from config")
         env, eval_env = create_env_with_mods(EnvName[opt.env_index], cfg.env_mods)
@@ -97,16 +97,16 @@ def main(cfg: DictConfig):
         # Log the modifications being applied
         summary_logger.info(f"Environment modifications enabled: {cfg.env_mods.use_mods}") 
     else:
-        # Use legacy noise settings if env_mods is not used
+        # Use the base environment when `env_mods` is not enabled.
         env = gym.make(EnvName[opt.env_index])
         eval_env = gym.make(EnvName[opt.env_index])
 
     # 3. Extract environment properties
     opt.state_dim = env.observation_space.shape[0]
     opt.max_state = env.observation_space.high.tolist()
-    opt.action_dim = env.action_space.shape[0]  # Continuous action dimensionprint
+    opt.action_dim = env.action_space.shape[0]  # Continuous action dimension
     opt.max_action = env.action_space.high.tolist()  # Action range [-max_action, max_action]
-    opt.min_action = env.action_space.low.tolist() # Action range [-max_action, max_action]
+    opt.min_action = env.action_space.low.tolist()  # Action range [-max_action, max_action]
     opt.max_e_steps = env._max_episode_steps    
 
     # 4. Print environment info
@@ -208,11 +208,11 @@ def main(cfg: DictConfig):
         total_steps = 0
         total_episode = 0
         
-        # Offline learning doesn't have exploration stage
+        # Offline learning has no exploration stage.
         if opt.mode == 'offline':
             agent.replay_buffer.load(opt.data_path, opt.reward_adapt, opt.reward_normalize, opt.env_index)
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
-                # If robust policy, train VAE first
+                # If robust mode is disabled, skip generative pretraining.
                 if not opt.robust:
                     opt.gen_steps = 0
                 while total_steps < opt.gen_steps:
@@ -233,7 +233,7 @@ def main(cfg: DictConfig):
                                  f"Generative Model: {opt.gen_type}, "
                                  f"Generative Model Loss: {gen_loss}")
                         
-                # Policy training                         
+                # Policy training
                 while total_steps < opt.max_train_steps:
                     agent.train(writer, total_steps)
                     total_steps += 1
@@ -246,7 +246,7 @@ def main(cfg: DictConfig):
                     
                     # Evaluate and log periodically
                     if total_steps % opt.eval_interval == 0:
-                        # Temporarily close progress bars for evaluation
+                    # Run periodic evaluation.
                         ep_r = evaluate_policy(eval_env, agent, turns=10, seeds_list=[random.randint(0, 100000) for _ in range(10)])
 
                         if writer is not None:
@@ -264,31 +264,31 @@ def main(cfg: DictConfig):
         elif opt.mode == 'generate':
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
                 while total_steps < opt.max_train_steps:
-                    # Reset environment with incremented seed
+                    # Reset environment with an incremented seed.
                     state, info = env.reset(seed=env_seed)
                     env_seed += 1
                     total_episode += 1
                     done = False
 
-                    # Interact with environment until episode finishes
+                    # Interact with the environment until the episode ends.
                     while not done:
                         if np.random.random() < opt.epsilon:
-                            # Sample action directly from environment's action space
+                            # Sample an action directly from the environment action space.
                             action = env.action_space.sample() 
                         else:
-                            # Select action from agent
+                            # Select action from the agent.
                             action = agent.select_action(state, deterministic=False)
 
                         # Step the environment
                         next_state, reward, dw, tr, info = env.step(action)
 
-                        # Check for terminal state
+                        # Check termination/truncation flags.
                         done = (dw or tr)
 
                         # Store transition in replay buffer
                         agent.replay_buffer.add(state, action, reward, next_state, done)
 
-                        # Move to next step
+                        # Advance to the next step.
                         state = next_state
                         total_steps += 1
 
@@ -304,39 +304,39 @@ def main(cfg: DictConfig):
             # Create a progress bar for the total training steps
             with tqdm(total=opt.max_train_steps, desc="Training Progress", ncols=100) as pbar:
                 while total_steps < opt.max_train_steps:
-                    # (a) Reset environment with incremented seed
+                    # (a) Reset environment with an incremented seed.
                     state, info = env.reset(seed=env_seed)
                     env_seed += 1
                     total_episode += 1
                     done = False
                     ep_reward = 0
 
-                    # Create a progress bar for steps within this episode
+                    # Create a progress bar for steps within this episode.
                     episode_pbar = tqdm(total=opt.max_e_steps, desc=f"Episode {total_episode}", 
                                         leave=False, ncols=100, position=1)
 
-                    # (b) Interact with environment until episode finishes
+                    # (b) Interact with the environment until the episode ends.
                     episode_steps = 0
                     while not done:
-                        # Random exploration for some episodes (each episode is up to max_e_steps)
+                        # Random exploration for initial episodes (up to `max_e_steps` each).
                         if total_steps < (opt.explore_episode * opt.max_e_steps):
                             # Sample action directly from environment's action space
                             action = env.action_space.sample() 
                         else:
-                            # Select action from agent 
+                            # Select action from the agent.
                             action = agent.select_action(state, deterministic=False)
 
                         # Step the environment
                         next_state, reward, dw, tr, info = env.step(action)
                         ep_reward += reward
 
-                        # Check for terminal state
+                        # Check termination/truncation flags.
                         done = (dw or tr)
 
                         # Store transition in replay buffer
                         agent.replay_buffer.add(state, action, reward, next_state, done)
 
-                        # Move to next step
+                        # Advance to the next step.
                         state = next_state
                         total_steps += 1
                         episode_steps += 1
@@ -352,7 +352,7 @@ def main(cfg: DictConfig):
                                 'reward': f"{ep_reward:.2f}"
                             })
 
-                        # (c) Train the agent at fixed intervals (batch updates)
+                        # (c) Train the agent at fixed intervals (batch updates).
                         if (total_steps >= opt.explore_episode * opt.max_e_steps) and (total_steps % opt.update_every == 0):
                             writer_copy = writer
                             train_bar = tqdm(range(opt.update_every), 
@@ -367,9 +367,9 @@ def main(cfg: DictConfig):
                             agent.a_lr *= 0.999
                             agent.c_lr *= 0.999
 
-                        # (d) Evaluate and log periodically
+                        # (d) Evaluate and log periodically.
                         if total_steps % opt.eval_interval == 0:
-                            # Temporarily close progress bars for evaluation
+                            # Close episode progress bar before evaluation output.
                             episode_pbar.close()
                             pbar.set_description("Evaluating...")
                             ep_r = evaluate_policy(eval_env, agent, turns=10)
@@ -384,20 +384,20 @@ def main(cfg: DictConfig):
                                 f"Episode Reward: {ep_r}"
                             )
 
-                            # Reset progress bar description
+                            # Restore training progress bar display.
                             pbar.set_description("Training Progress")
                             episode_pbar = tqdm(total=opt.max_e_steps, initial=episode_steps,
                                                 desc=f"Episode {total_episode}", 
                                                 leave=False, ncols=100, position=1)
 
-                        # (e) Save model at fixed intervals
+                        # (e) Save model at fixed intervals.
                         if opt.save_model and total_steps % opt.save_interval == 0:
                             agent.save(BrifEnvName[opt.env_index])
 
-                    # Close episode progress bar when episode ends
+                    # Close the episode progress bar when the episode ends.
                     episode_pbar.close()
 
-                    # Log episode stats
+                    # Log episode statistics.
                     log.info(f"Episode {total_episode} completed with reward {ep_reward:.2f} in {episode_steps} steps")
 
         # Evaluate the trained agent

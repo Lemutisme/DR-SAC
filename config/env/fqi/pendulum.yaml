@@ -7,5 +7,5 @@ env_index: 0
 reward_adapt: true
 eval_freq: 1000
 save_interval: 1000
-max_trn_steps: 10000 #10k
+max_trn_steps: 10000 # 10k
 max_vae_trn_step: 1000

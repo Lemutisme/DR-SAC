@@ -1,39 +1,39 @@
 # @package _global_
 
-# Default configuration for SAC algorithm
+# Default configuration for the SAC algorithm
 defaults:
   - _self_
-  - env/sac: pendulum # default env: Pendulum
-  - env_mods  # New include for environment modifications
+  - env/sac: pendulum # default env preset
+  - env_mods  # Environment modification settings
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
 # ------------  General settings  ------------
-# Device used
+# Device to use
 device: cuda
-# Training mode: offline learning, continual learning or generating data
+# Training mode: offline learning, continual learning, or data generation
 mode: offline # offline, continual, generate
-# Whether writing summary on Tensorboard
+# Whether to write TensorBoard summaries
 write: false
-# Whether priting network loss during training
+# Whether to print network losses during training
 debug_print: false
-# Whether using render mode in gymnasium
+# Whether to enable render mode in Gymnasium
 render: false
-# Whether load model, typically used in evaluation
+# Whether to load a model (typically for evaluation)
 load_model: false
 # Model loading path
 load_path: None
-# Whether evaluate policy
+# Whether to run evaluation only
 eval_model: false
-# Whether save model during training
+# Whether to save the model during training
 save_model: true
-# Data path in offline mode
+# Dataset path in offline mode
 data_path: None
-# Whether using V-critic
+# Whether to use a V-critic
 use_v: true
 
 # ------------  Generating settings  ------------ 
-# For epsilon-greedy
+# Epsilon for epsilon-greedy exploration
 epsilon: 0.1
 
 # ------------  Training settings  ------------
@@ -41,23 +41,23 @@ epsilon: 0.1
 seed: 42
 # Training steps
 max_train_steps: 200000
-# Generative Model training steps
+# Generative model pretraining steps
 gen_steps: 0
-# Behavior Cloning pre-training weight
+# Behavior cloning loss weight
 bc_weight: 0
-# Behavior Cloning pre-training steps
+# Behavior cloning weight decay rate
 bc_decay_rate: 1e-6
-# Save every xxx steps
+# Save every N steps
 save_interval: 10000
-# Evaluate every xxx steps
+# Evaluate every N steps
 eval_interval: 1000
-# Size of data buffer
+# Replay/data buffer size
 data_size: 1000000 #1e6
 
-# Continual learning only
-# Update model every xxx steps
+# Continual mode only
+# Update model every N steps
 update_every: 50
-# Exploration episodes before training
+# Number of exploration episodes before training
 explore_episode: 50 
 
 # ------------  Algorithm hyperparameters  ------------
@@ -67,49 +67,49 @@ gamma: 0.99
 tau: 0.005
 # Hidden dimensions
 hid_dim: [256, 256]
-# No. of hidden layers
+# Number of hidden layers
 net_layer: 1
-# Whether using vectorized critic ensemble
-# If not, will use two parallel critics
+# Whether to use a vectorized critic ensemble
+# If false, the code uses two parallel critics
 critic_ensemble: true
-# No. of critics
+# Number of critics
 n_critic: 2
-# Mini-batch size
+# Minibatch size
 batch_size: 256 
 # Learning rates
-a_lr: 0.0005 # 5e-4, for actor
-c_lr: 0.0005 # 5e-4, for critic
-g_lr: 0.0005 # 5e-4, for functional optimization 
-r_lr: 0.0005 # 5e-4, for transiiton vae 
-# Initial temperature
+a_lr: 0.0005 # 5e-4, actor
+c_lr: 0.0005 # 5e-4, critic
+g_lr: 0.0005 # 5e-4, functional optimization
+r_lr: 0.0005 # 5e-4, transition model
+# Initial entropy temperature
 alpha: 0.12
-# Whether using auto-tune temperature
+# Whether to auto-tune temperature
 adaptive_alpha: true
 
 # ------------  Environment configurations  ------------
-# Whether using reward engineering
+# Whether to apply reward shaping
 reward_adapt: false # only for pendulum, lunarlander
-# Whether normalizing reward 
+# Whether to normalize rewards
 reward_normalize: false
-# Whether using robust policy
+# Whether to enable robust training
 robust: false
-# Radius of KL divergence ball
+# Radius of the KL-divergence ball
 delta: 0.1
-# Whether using functional optimization
+# Robust optimizer type
 robust_optimizer: functional # functional, separate
-# Probability of taking random actions, used in some test cases
+# Probability of random actions during evaluation/testing
 random_action_prob: 0.0
 
 # ------------  Generative Model settings  ------------
-# Type of generative model
-gen_type: vae # vae, diffusion
-# Latent dimensions for vae
+# Generative model type
+gen_type: vae # vae, diffusion, flow, score
+# Latent dimension for VAE
 vae_latent_dim: 5
-# No. of diffusion timesteps
+# Number of diffusion timesteps
 diffusion_timesteps: 20
-# Dimension of time embedding in diffusion model
+# Time embedding dimension for diffusion
 time_embed_dim: 32
-# Beta schedule for diffusion model
+# Diffusion beta schedule
 beta_start: 0.00001 #1e-5
 beta_end: 0.001 #1e-3
 

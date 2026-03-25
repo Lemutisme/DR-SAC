@@ -1,14 +1,14 @@
 # @package env_mods
 # Configuration for environment modifications
 
-use_mods: false  # Master switch for all modifications
+use_mods: false  # Master switch for all modification wrappers/shifts
 
 # Observation noise configuration
 observation_noise:
   enabled: false
-  type: "gaussian"  # Options: gaussian, uniform, saltpepper, adversarial
+  type: "gaussian"  # Options: gaussian, uniform, cauchy, saltpepper, adversarial
   noise_level: 0.1  # Noise magnitude
-  frequency: 1.0  # Frequency of applying noise (1.0 = every step)
+  frequency: 1.0  # Probability of adding noise each step (1.0 = every step)
 
 # Action perturbation configuration
 action_perturb:
@@ -36,19 +36,19 @@ param_shift:
   enabled: false
   train_apply: false
   eval_apply: true
-  # For Pendulum:
+  # For Pendulum
   gravity_factor: 1.0  # Gravity factor
   mass_factor: 1.0  # Mass factor
   length_factor: 1.0  # Length factor
-  # For Cartpole:
-  # Share gravity_factor:1.0, length_factor:1.0, mass_factor:1.0
+  # For ContinuousCartPole
+  # Shares gravity_factor, length_factor, and mass_factor
   force_mag_factor: 1.0
-  # For LunarLander:
-  # Share gravity_factor:1.0
+  # For LunarLander
+  # Shares gravity_factor
   wind_power: 0.0  # Constant wind force
   turbulence_power: 1.5  # Random turbulence
-  engine_factor: 1.0 # Main and side engine power factor
-  # For Halfcheetah
+  engine_factor: 1.0  # Main and side engine power scale
+  # For HalfCheetah
   back_stiff: 1.0
   front_stiff: 1.0
   back_damping: 1.0
@@ -62,8 +62,8 @@ param_shift:
 
 # Evaluation environment configuration
 eval:
-  use_modified: true  # Whether to use modified env for evaluation
-  include_observation_perturb: true  # Include action perturbations in eval
+  use_modified: true  # Whether to use modified environment for evaluation
+  include_observation_perturb: true  # Include observation perturbations in eval
   include_action_perturb: true  # Include action perturbations in eval
   include_reward_shift: true  # Include reward shifts in eval
   include_transition_perturb: true  # Include transition perturbations in eval

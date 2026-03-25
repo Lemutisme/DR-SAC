@@ -1,5 +1,6 @@
 __pycache__
 *.pyc
+.vscode/
 outputs
 multirun/SAC
 multirun/PPO
