@@ -1,6 +1,0 @@
-# @package _global_
-
-# ContinuousCartPole environment config
-
-env_name: ContinuousCartPole
-env_index: 1

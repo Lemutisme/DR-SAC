@@ -70,16 +70,14 @@ def main(cfg: DictConfig):
         "ContinuousCartPole-v0",
         'LunarLanderContinuous-v3',
         'HalfCheetah-v5',
-        "Reacher-v5",
-        "Ant-v5"
+        "Reacher-v5"
     ]
     BrifEnvName = [
         'PV1',
         "CPV0",
         'LLdV3',
         'HCV5',
-        'RV5',
-        'ANTV5'
+        'RV5'
     ]
 
     # Create a config object from Hydra for compatibility with rest of code
