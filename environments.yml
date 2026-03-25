@@ -15,7 +15,7 @@ dependencies:
   - brotli-bin=1.0.9=h166bdaf_7
   - bzip2=1.0.8=h5eee18b_6
   - c-ares=1.34.5=hef5626c_0
-  - ca-certificates=2025.8.3=hbd8a1cb_0
+  - ca-certificates=2025.11.12=hbd8a1cb_0
   - cairo=1.18.4=h44eff21_0
   - contourpy=1.0.2=py310hbf28c38_2
   - cycler=0.12.1=pyhd8ed1ab_1
@@ -97,6 +97,7 @@ dependencies:
   - openjpeg=2.5.2=h0d4d230_1
   - openldap=2.6.4=h42fbc30_0
   - openssl=3.0.16=h5eee18b_0
+  - pcre=8.45=h9c3ff4c_0
   - pcre2=10.42=hebb0a14_1
   - pixman=0.46.4=h7934f7d_0
   - pthread-stubs=0.4=h36c2ea0_1001

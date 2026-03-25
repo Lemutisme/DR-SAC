@@ -256,7 +256,7 @@ def main(cfg: DictConfig):
 
                         log.info(f"EnvName: {BrifEnvName[opt.env_index]}, "
                                  f"Steps: {int(total_steps/1000)}k, "
-                                 f"Episode Reward: {ep_r}",
+                                 f"Episode Reward: {ep_r}, "
                                  f"bc_weight: {agent.bc_weight:.6f}")
                         
                     # Save model at fixed intervals

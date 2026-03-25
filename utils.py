@@ -21,6 +21,8 @@ def Reward_adapter(r, EnvIndex):
     # For LunarLander-v3
     elif EnvIndex == 2:
         if r <= -100: r = -10
+    elif EnvIndex == 5:
+        r *= 0.01
     return r
 
 def evaluate_policy(env, agent, turns = 1, seeds_list = [], random_action_prob=0):

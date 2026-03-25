@@ -6,11 +6,14 @@ env_name: Ant-v5
 env_index: 5
 max_train_steps: 500000 # 500k for non-robust, 600k for robust
 eval_interval: 5000
-n_critic: 2
-hid_dim: [512, 512]
+bc_steps: 50000 # 50k
+reward_adapt: true
+n_critic: 5
+net_layer: 2
+hid_dim: [256, 256]
 
 # Training hyperparameters
-a_lr: 0.0003 # 3e-4
+a_lr: 0.0001 # 3e-4
 c_lr: 0.0003 # 3e-4
 g_lr: 0.00005 # 5e-5
 r_lr: 0.0005 # 5e-4
