@@ -23,16 +23,21 @@ At a high level, DR-SAC modifies standard SAC by replacing the nominal target wi
 
 Intuition:
 1. **Robust objective**: instead of trusting a single transition model, DR-SAC considers the **worst-case** transition dynamics inside a KL-constrained uncertainty set. Specifically, the distributionally robust Bellman operator is defined as:
-$$\begin{aligned}
-\mathcal{T}_{\delta}^{\pi} Q(s,a) =& \mathbb{E}[r] + \gamma\cdot 
-\inf_{p_{s,a}\in\mathcal{P}_{s,a}(\delta)} \mathbb{E}_{p_{s,a}} [V(s')]\quad & \text{(primal form)} \\
-=& \mathbb{E}[r] + \gamma\cdot 
-\sup_{\beta\ge0} \left\{-\beta\cdot\log\left(\mathbb{E}_{p_{s,a}^0} \left[\text{exp}\left(-\frac{V(s')}{\beta}\right)\right]\right) \right\}\quad & \text{(dual form)}
-\end{aligned}$$
-where $\mathcal{P}_{s,a}(\delta)$ is the KL-divergence ball centered at the nominal transition model $p_{s,a}^0$ with radius $\delta$, and value function is 
-$$
-V(s) = \mathbb{E}_{a\sim\pi}[Q(s,a) - \alpha \cdot\log \pi(a | s)].
-$$
+```math
+\begin{aligned}
+\mathcal{T}_{\delta}^{\pi} Q(s,a)
+= & \mathbb{E}[r] + \gamma\cdot 
+\inf_{p_{s,a}\in\mathcal{P}_{s,a}(\delta)} \mathbb{E}_{p_{s,a}} [V(s')]\quad
+& \text{(primal form)} \\
+= & \mathbb{E}[r] + \gamma\cdot 
+\sup_{\beta\ge0} \left\{-\beta\cdot\log\left(\mathbb{E}_{p_{s,a}^0} \left[\text{exp}\left(-\frac{V(s')}{\beta}\right)\right]\right) \right\}\quad
+& \text{(dual form)}
+\end{aligned}
+```
+where $\mathcal{P}_{s,a}(\delta)$ is the KL-divergence ball centered at the nominal transition model $p\_{s,a}\^0$ with radius $\delta$, and value function is 
+```math
+V(s) = \mathbb{E}_{a\sim\pi}[Q(s,a) - \alpha \cdot\log \pi(a \mid s)].
+```
 
 2. **Functional optimization**: we replace the per-(s,a) scalar optimization with a shared optimization problem over a function space, which better balances effectiveness and efficiency of the robust target construction.
 
