@@ -4,8 +4,8 @@ This repository provides an implementation of **Distributionally Robust Soft Act
 
 ## Paper links
 
-- **OpenReview**: `https://openreview.net/forum?id=a19MA0ksbc`
-- **arXiv**: `https://arxiv.org/abs/2506.12622`
+- **OpenReview**: [`https://openreview.net/forum?id=a19MA0ksbc`](https://openreview.net/forum?id=a19MA0ksbc)
+- **arXiv**: [`https://arxiv.org/abs/2506.12622`](https://arxiv.org/abs/2506.12622)
 
 ## Introduction
 Deep reinforcement learning (RL) policies can perform well in controlled settings, but they often degrade under distribution shifts and environmental uncertainty. This is particularly challenging in offline learning settings, where the agent only has access to logged data from a nominal dynamics model.
