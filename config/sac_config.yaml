@@ -1,64 +1,119 @@
 # @package _global_
 
-# Default configuration for SAC algorithm
+# Default configuration for the SAC algorithm
 defaults:
   - _self_
-  - env: pendulum
-  - env_mods  # New include for environment modifications
+  - env/sac: pendulum # default env preset
+  - env_mods  # Environment modification settings
   - override hydra/job_logging: default
   - override hydra/hydra_logging: default
 
-# General settings
+# ------------  General settings  ------------
+# Device to use
 device: cuda
-mode: 'offline' # offline, continuous, generate
+# Training mode: offline learning, continual learning, or data generation
+mode: offline # offline, continual, generate
+# Whether to write TensorBoard summaries
 write: false
+# Whether to print network losses during training
 debug_print: false
+# Whether to enable render mode in Gymnasium
 render: false
+# Whether to load a model (typically for evaluation)
 load_model: false
+# Model loading path
 load_path: None
+# Whether to run evaluation only
 eval_model: false
+# Whether to save the model during training
 save_model: true
+# Dataset path in offline mode
 data_path: None
+# Whether to use a V-critic
+use_v: true
 
-# Generating settings(epsilon-greedy)
-d4rl: false
+# ------------  Generating settings  ------------ 
+# Epsilon for epsilon-greedy exploration
 epsilon: 0.1
 
-# Training settings
+# ------------  Training settings  ------------
+# Random seed
 seed: 42
+# Training steps
 max_train_steps: 200000
+# Generative model pretraining steps
+gen_steps: 0
+# Behavior cloning loss weight
+bc_weight: 0
+# Behavior cloning weight decay rate
+bc_decay_rate: 1e-6
+# Save every N steps
 save_interval: 10000
+# Evaluate every N steps
 eval_interval: 1000
+# Replay/data buffer size
+data_size: 1000000 #1e6
+
+# Continual mode only
+# Update model every N steps
 update_every: 50
+# Number of exploration episodes before training
 explore_episode: 50 
 
-# Algorithm hyperparameters
+# ------------  Algorithm hyperparameters  ------------
+# Discount rate
 gamma: 0.99
+# Soft update
 tau: 0.005
-net_arch: [256,256]
+# Hidden dimensions
+hid_dim: [256, 256]
+# Number of hidden layers
 net_layer: 1
-a_lr: 0.005  # 5e-3
-c_lr: 0.00005 # 5e-5
-b_lr: 0.00005 # 5e-5
-g_lr: 0.0005 # 5e-4
-r_lr: 0.0005 # 5e-5
-l2_reg: 0 # 1e-3
-batch_size: 256 #256
+# Whether to use a vectorized critic ensemble
+# If false, the code uses two parallel critics
+critic_ensemble: true
+# Number of critics
+n_critic: 2
+# Minibatch size
+batch_size: 256 
+# Learning rates
+a_lr: 0.0005 # 5e-4, actor
+c_lr: 0.0005 # 5e-4, critic
+g_lr: 0.0005 # 5e-4, functional optimization
+r_lr: 0.0005 # 5e-4, transition model
+# Initial entropy temperature
 alpha: 0.12
+# Whether to auto-tune temperature
 adaptive_alpha: true
 
-# Environment configurations
-reward_adapt: true
+# ------------  Environment configurations  ------------
+# Whether to apply reward shaping
+reward_adapt: false # only for pendulum, lunarlander
+# Whether to normalize rewards
+reward_normalize: false
+# Whether to enable robust training
 robust: false
-robust_optimizer: functional # beta, functional, separate
-noise: false  # Legacy noise setting - consider using env_mods instead
-type: gaussian
-adv: false
-spread: 0.0      # Legacy std setting - consider using env_mods instead
-scale: 1.0    # Legacy scale setting - consider using env_mods instead
-delta: 0.0
+# Radius of the KL-divergence ball
+delta: 0.1
+# Robust optimizer type
+robust_optimizer: functional # functional, separate
+# Probability of random actions during evaluation/testing
+random_action_prob: 0.0
 
-# Hydra output directory
+# ------------  Generative Model settings  ------------
+# Generative model type
+gen_type: vae # vae, diffusion, flow, score
+# Latent dimension for VAE
+vae_latent_dim: 5
+# Number of diffusion timesteps
+diffusion_timesteps: 20
+# Time embedding dimension for diffusion
+time_embed_dim: 32
+# Diffusion beta schedule
+beta_start: 0.00001 #1e-5
+beta_end: 0.001 #1e-3
+
+# ------------  Hydra output directory  ------------
 hydra:
   run:
     dir: ./outputs/SAC/${now:%Y-%m-%d}/${now:%H-%M-%S}

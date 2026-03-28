@@ -1,5 +1,6 @@
 __pycache__
 *.pyc
+.vscode/
 *.zip
 outputs
 data
@@ -13,8 +14,14 @@ eval.sh
 debug_outputs
 eval_outputs
 output_to_publish
-selected_model
+continual_model
+pre_train_model
 offline_model
+old_offline_model
 dataset
+old_dataset
+folder
 plot
-plot.py
+sac_n.py
+read_data.py
+helper.py

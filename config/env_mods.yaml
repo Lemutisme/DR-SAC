@@ -1,20 +1,20 @@
 # @package env_mods
 # Configuration for environment modifications
 
-use_mods: false  # Master switch for all modifications
+use_mods: false  # Master switch for all modification wrappers/shifts
 
 # Observation noise configuration
 observation_noise:
   enabled: false
-  type: "gaussian"  # Options: gaussian, uniform, saltpepper, adversarial
-  level: 0.1  # Noise magnitude
-  frequency: 1.0  # Frequency of applying noise (1.0 = every step)
+  type: "gaussian"  # Options: gaussian, uniform, cauchy, saltpepper, adversarial
+  noise_level: 0.1  # Noise magnitude
+  frequency: 1.0  # Probability of adding noise each step (1.0 = every step)
 
 # Action perturbation configuration
 action_perturb:
   enabled: false
-  type: "noise"  # Options: drop, noise, delay, stuck
-  probability: 0.1  # Probability of perturbation
+  type: "normal"  # Options: drop, normal, cauchy, delay, stuck
+  probability: 1.0  # Probability of perturbation
   level: 0.1  # Magnitude of perturbation
 
 # Reward shift configuration
@@ -36,33 +36,34 @@ param_shift:
   enabled: false
   train_apply: false
   eval_apply: true
-  # For Pendulum:
-  g_factor: 1.0  # Gravity factor
-  m_factor: 1.0  # Mass factor
-  l_factor: 1.0  # Length factor
-  # For Cartpole:
-  len_factor: 1.0
-  force_mag_factor: 1.0
-  # For LunarLander:
+  # For Pendulum
   gravity_factor: 1.0  # Gravity factor
+  mass_factor: 1.0  # Mass factor
+  length_factor: 1.0  # Length factor
+  # For ContinuousCartPole
+  # Shares gravity_factor, length_factor, and mass_factor
+  force_mag_factor: 1.0
+  # For LunarLander
+  # Shares gravity_factor
   wind_power: 0.0  # Constant wind force
-  turbulence_power: 0.0  # Random turbulence
-  engine_factor: 1.0 # Main and side engine power factor
-
-# Custom env configuration (for supported environments)
-custom:
-  enabled: false
-  # For Pendulum:
-  spread: 0.0
-  type: "gaussian" # Options: gaussian, cauchy, laplace, t, uniform
-  adv: false
-
+  turbulence_power: 1.5  # Random turbulence
+  engine_factor: 1.0  # Main and side engine power scale
+  # For HalfCheetah
+  back_stiff: 1.0
+  front_stiff: 1.0
+  back_damping: 1.0
+  front_damping: 1.0
+  act_ctrlrange: 1.0
+  # For Reacher
+  joint0_stiff: 0.0
+  joint1_stiff: 0.0
+  joint0_damping: 1.0
+  joint1_damping: 1.0
 
 # Evaluation environment configuration
 eval:
-  use_modified: true  # Whether to use modified env for evaluation
-  scale_noise: false  # Whether to scale noise in eval env
-  noise_scale_factor: 2.0  # Factor to scale noise by in eval
+  use_modified: true  # Whether to use modified environment for evaluation
+  include_observation_perturb: true  # Include observation perturbations in eval
   include_action_perturb: true  # Include action perturbations in eval
   include_reward_shift: true  # Include reward shifts in eval
   include_transition_perturb: true  # Include transition perturbations in eval
