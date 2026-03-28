@@ -42,6 +42,13 @@ V(s) = \mathbb{E}_{a\sim\pi}[Q(s,a) - \alpha \cdot\log \pi(a \mid s)].
 2. **Functional optimization**: we replace the per-(s,a) scalar optimization with a shared optimization problem over a function space, which better balances effectiveness and efficiency of the robust target construction.
 
 3. **Generative modeling**: the algorithm incorporates generative models to estimate the unknown transition dynamics in offline settings, resolving the double-sampling issue that arises under non-linear objectives when the ambiguity set is defined by KL-divergence.
+This repository provides an implementation of Distributionally Robust Soft Actor-Critic (DR-SAC) (ICLR 2026).
+
+Paper links
+
+OpenReview: https://openreview.net/forum?id=a19MA0ksbc&referrer=%5BAuthor%20Console%5D(%2Fgroup%3Fid%3DICLR.cc%2F2026%2FConference%2FAuthors%23your-submissions)
+
+arXiv: https://arxiv.org/abs/2506.12622
 
 ## Setup
 
@@ -59,7 +66,7 @@ conda activate DRSAC
 Train with the default configuration (Pendulum, SAC) in offline learning settings. Provide the offline dataset location via `data_path` (set it to `YOUR_DATA_PATH`). All models are trained in the nominal (unperturbed) environment.
 
 ```
-python train_sac.py data_path="YOUR_DATA_PATH"
+python sac.py # SAC
 ```
 
 ### Changing Environments
@@ -151,54 +158,10 @@ Environment-specific configurations are stored under `config/env/`. They define:
 * Environment name and index
 * Recommended training steps
 
-## Results
- 
-<table>
-  <tr>
-    <td align="center">
-      <img src="imgs/length.png" width="320" />
-      <div><b>Pendulum, Length</b></div>
-    </td>
-    <td align="center">
-      <img src="imgs/action.png" width="320" />
-      <div><b>CartPole, Action</b></div>
-    </td>
-    <td align="center">
-      <img src="imgs/engine.png" width="320" />
-      <div><b>LunarLander, Engine</b></div>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="imgs/obs_noise.png" width="320" />
-      <div><b>Reacher, Observation Noise</b></div>
-    </td>
-    <td align="center">
-      <img src="imgs/damping.png" width="320" />
-      <div><b>Reacher, Damping</b></div>
-    </td>
-    <td align="center">
-      <img src="imgs/back_damping.png" width="320" />
-      <div><b>HalfCheetah, Back Damping</b></div>
-    </td>
-  </tr>
-</table>
-
-<p> The curves show the average reward over 50 episodes, with shaded regions indicating 0.5 standard deviation. Environmental perturbations include parameter shifts, state and actuator noise.</p>
-
-
-## Ablations
-
-### Training Efficiency of DR-SAC
-- In DR-SAC, we replace the per-$(s,a)$ scalar optimization with a shared optimization problem over a function space. This functional approach achieves comparable robustness to the separate approach while requiring less than $2\%$ of the training time.
-
-### Selection of Generative Model
-- DR-SAC is largely insensitive to the VAE modeling choices. On Pendulum, varying the VAE latent dimension between 5 and 20 does not noticeably degrade robustness, and DR-SAC consistently outperforms the SAC baseline.
-- We also evaluate alternative generative transition models in DR-SAC, including diffusion and flow-based variants. The diffusion-based model achieves comparable robustness but requires at least $4.5\times$ the training time of the VAE-based model. Flow-based models show less stable performance, even on unperturbed Pendulum.
-
 ## Dataset and Selected Models
 
 ```
+
 wget -O ./models/models.zip "https://uofi.box.com/s/9bfnbhexghgv6xbfmu4rj946ng9sv9oa"
 echo "Unzipping models..."
 unzip ./models/models.zip -d ./models/selected_models
@@ -233,7 +196,7 @@ You can create custom configuration groups for different experiments:
 
 1. Create a directory in `config/` (e.g., `config/experiment/`)
 2. Add YAML files with different configurations
-3. Run with: `python train_sac.py +experiment=my_config`
+3. Run with: `python sac_hydra.py +experiment=my_config`
 
 ### Citation
 
